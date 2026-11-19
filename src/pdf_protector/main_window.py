@@ -656,6 +656,8 @@ class MainWindow(QMainWindow):
             self._request_cancellation()
             event.ignore()
             return
+        if not self._closing:
+            self._scrub_password_fields()
         event.accept()
 
 

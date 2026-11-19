@@ -778,6 +778,28 @@ def test_cleanup_warning_is_shown_with_primary_failure(
     _assert_passwords_cannot_be_restored(window, qtbot)
 
 
+def test_idle_close_scrubs_password_fields_and_undo_history(qtbot) -> None:
+    """Catches an idle window close retaining recoverable password secrets."""
+    window = _make_window(qtbot)
+    password = "idle-close-secret-password"
+    confirmation = "idle-close-secret-confirmation"
+    window.password_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+    qtbot.keyClicks(window.password_edit, password)
+    window.confirmation_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+    qtbot.keyClicks(window.confirmation_edit, confirmation)
+    assert (window.password_edit.text(), window.confirmation_edit.text()) == (
+        password,
+        confirmation,
+    )
+    assert window._thread is None
+
+    assert window.close() is True
+    qtbot.waitUntil(lambda: not window.isVisible())
+
+    assert (window.password_edit.text(), window.confirmation_edit.text()) == ("", "")
+    _assert_passwords_cannot_be_restored(window, qtbot)
+
+
 def test_close_during_real_output_job_removes_temporary_and_partial_destination(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
