@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-protector"
+version = "0.1.0"
+description = "Aplicación de escritorio para proteger documentos PDF"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "PySide6",
+    "pikepdf",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-qt",
+    "PyInstaller",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
