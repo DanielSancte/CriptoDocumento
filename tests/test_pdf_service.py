@@ -53,6 +53,32 @@ def _stream_payloads(document: pikepdf.Pdf) -> list[bytes]:
     ]
 
 
+def _reachable_objects(root: object) -> list[object]:
+    pending = [root]
+    visited: set[tuple[int, int] | int] = set()
+    reachable: list[object] = []
+    retained_direct_objects: list[object] = []
+
+    while pending:
+        item = pending.pop()
+        if not isinstance(item, (pikepdf.Array, pikepdf.Dictionary, pikepdf.Stream)):
+            continue
+        objgen = getattr(item, "objgen", (0, 0))
+        identity: tuple[int, int] | int = objgen if objgen != (0, 0) else id(item)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        if objgen == (0, 0):
+            retained_direct_objects.append(item)
+        reachable.append(item)
+        if isinstance(item, pikepdf.Array):
+            pending.extend(item)
+        else:
+            pending.extend(item.get(key) for key in item.keys())
+
+    return reachable
+
+
 def test_inspect_counts_pages_and_releases_the_source(
     multipage_pdf_factory,
 ) -> None:
@@ -94,6 +120,28 @@ def test_inspect_reports_known_source_errors_with_the_file_name(
         source = damaged_pdf_factory("broken-input.pdf")
     else:
         source = tmp_path / "missing-input.pdf"
+
+    with pytest.raises(SourcePdfError, match=re.escape(source.name)):
+        inspect_source(source)
+
+
+def test_inspect_rejects_encryption_even_when_blank_user_password_opens(
+    blank_user_encrypted_pdf_factory,
+) -> None:
+    """Catches accepting owner-only encryption that opens with a blank user key."""
+    source = blank_user_encrypted_pdf_factory("owner-only-source.pdf")
+    with pikepdf.open(source, password="") as encrypted:
+        assert encrypted.is_encrypted is True
+
+    with pytest.raises(SourcePdfError, match=re.escape(source.name)):
+        inspect_source(source)
+
+
+def test_inspect_translates_malformed_signature_fields_to_named_source_error(
+    malformed_signature_pdf_factory,
+) -> None:
+    """Catches malformed but parseable field objects leaking AttributeError."""
+    source = malformed_signature_pdf_factory("broken-fields.pdf")
 
     with pytest.raises(SourcePdfError, match=re.escape(source.name)):
         inspect_source(source)
@@ -178,6 +226,77 @@ def test_sanitize_removes_active_content_and_flattens_visible_appearances(
         assert b" Do" in _page_content(page)
 
 
+def test_sanitize_removes_payloads_from_nested_form_xobject_graph(
+    nested_xobject_pdf_factory,
+    tmp_path: Path,
+) -> None:
+    """Catches attachments, JavaScript, or metadata hidden below nested resources."""
+    source = nested_xobject_pdf_factory()
+    with pikepdf.open(source) as unsafe:
+        unsafe_graph = _reachable_objects(unsafe.Root)
+        assert any(
+            isinstance(item, (pikepdf.Dictionary, pikepdf.Stream))
+            and "/AF" in item
+            for item in unsafe_graph
+        )
+        assert any(
+            isinstance(item, (pikepdf.Dictionary, pikepdf.Stream))
+            and "/Metadata" in item
+            for item in unsafe_graph
+        )
+        assert any(
+            isinstance(item, (pikepdf.Dictionary, pikepdf.Stream))
+            and item.get("/Type") == pikepdf.Name.Action
+            and item.get("/S") == pikepdf.Name.RichMediaExecute
+            for item in unsafe_graph
+        )
+
+    sink = BytesIO()
+    build_encrypted_pdf(_request((source,), tmp_path / "unused.pdf"), sink)
+
+    with pikepdf.open(BytesIO(sink.getvalue()), password=USER_PASSWORD) as sanitized:
+        reachable = _reachable_objects(sanitized.Root)
+        mappings = [
+            item
+            for item in reachable
+            if isinstance(item, (pikepdf.Dictionary, pikepdf.Stream))
+        ]
+        for item in mappings:
+            for forbidden_key in (
+                "/A",
+                "/AA",
+                "/AF",
+                "/EF",
+                "/EmbeddedFiles",
+                "/JavaScript",
+                "/JS",
+                "/Metadata",
+                "/OpenAction",
+            ):
+                assert forbidden_key not in item
+            assert item.get("/Type") not in (
+                pikepdf.Name.EmbeddedFile,
+                pikepdf.Name.Filespec,
+                pikepdf.Name.Metadata,
+                pikepdf.Name.Action,
+            )
+            assert item.get("/S") not in (
+                pikepdf.Name.JavaScript,
+                pikepdf.Name.GoTo3DView,
+                pikepdf.Name.RichMediaExecute,
+            )
+
+        reachable_streams = [
+            item.read_bytes()
+            for item in reachable
+            if isinstance(item, pikepdf.Stream)
+        ]
+        assert not any(b"NESTED-EMBEDDED-PAYLOAD" in data for data in reachable_streams)
+        assert not any(b"NESTED-XOBJECT-METADATA" in data for data in reachable_streams)
+        assert any(b"NESTED-VISIBLE-XOBJECT" in data for data in reachable_streams)
+        assert b"/Outer Do" in _page_content(sanitized.pages[0])
+
+
 def test_sanitize_reports_a_technical_limitation_instead_of_dropping_appearance(
     unflattenable_pdf_factory,
     tmp_path: Path,
@@ -208,6 +327,20 @@ def test_sanitize_rejects_xfa_instead_of_discarding_its_visible_presentation(
     assert sink.getvalue() == b""
 
 
+def test_sanitize_translates_malformed_annotation_to_named_source_error(
+    malformed_annotation_pdf_factory,
+    tmp_path: Path,
+) -> None:
+    """Catches malformed annotation entries leaking implementation exceptions."""
+    source = malformed_annotation_pdf_factory("broken-annots.pdf")
+    sink = BytesIO()
+
+    with pytest.raises(SourcePdfError, match=re.escape(source.name)):
+        build_encrypted_pdf(_request((source,), tmp_path / "unused.pdf"), sink)
+
+    assert sink.getvalue() == b""
+
+
 def test_cancel_between_sources_raises_without_writing_the_sink(
     minimal_pdf_factory,
     tmp_path: Path,
@@ -225,6 +358,34 @@ def test_cancel_between_sources_raises_without_writing_the_sink(
     with pytest.raises(CancelledError):
         build_encrypted_pdf(
             _request((first, second), tmp_path / "unused.pdf"),
+            sink,
+            is_cancelled=lambda: processed_pages >= 1,
+            on_progress=record_progress,
+        )
+
+    assert processed_pages == 1
+    assert sink.getvalue() == b""
+
+
+def test_cancel_inside_one_large_source_stops_between_page_copies(
+    multipage_pdf_factory,
+    tmp_path: Path,
+) -> None:
+    """Catches cancellation checkpoints existing only between source files."""
+    source = multipage_pdf_factory(
+        "large-single-source.pdf",
+        labels=("PAGE-1", "PAGE-2", "PAGE-3", "PAGE-4"),
+    )
+    processed_pages = 0
+    sink = BytesIO()
+
+    def record_progress(current: int, _total: int) -> None:
+        nonlocal processed_pages
+        processed_pages = current
+
+    with pytest.raises(CancelledError):
+        build_encrypted_pdf(
+            _request((source,), tmp_path / "unused.pdf"),
             sink,
             is_cancelled=lambda: processed_pages >= 1,
             on_progress=record_progress,

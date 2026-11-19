@@ -26,9 +26,10 @@ def validate_password_pair(password: str, confirmation: str) -> None:
 def validate_pdf_password(password: str) -> None:
     """Ensure qpdf can encode the exact password in an AES-256 PDF in memory."""
     try:
+        probe = BytesIO()
         with pikepdf.Pdf.new() as document:
             document.save(
-                BytesIO(),
+                probe,
                 encryption=pikepdf.Encryption(
                     user=password,
                     owner=generate_owner_password(),
@@ -37,7 +38,13 @@ def validate_pdf_password(password: str) -> None:
                     metadata=True,
                 ),
             )
-    except (pikepdf.PdfError, RuntimeError, ValueError) as error:
+        probe.seek(0)
+        with pikepdf.open(probe, password=password) as reopened:
+            if not reopened.user_password_matched:
+                raise PasswordCompatibilityError(
+                    "La contraseña no es compatible con el cifrado PDF AES-256."
+                )
+    except (pikepdf.PasswordError, pikepdf.PdfError, RuntimeError, ValueError) as error:
         raise PasswordCompatibilityError(
             "La contraseña no es compatible con el cifrado PDF AES-256."
         ) from error

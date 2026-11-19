@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from pdf_protector import output_service
 from pdf_protector.domain import (
     CancelledError,
     DestinationError,
+    DestinationErrorKind,
+    MemoryLimitError,
     PasswordCompatibilityError,
     PdfPermissions,
     ProtectionRequest,
@@ -121,7 +124,9 @@ def test_rejects_an_incompatible_password_before_creating_a_temporary_file(
     ("path", "expected"),
     [
         (Path(r"\\server\share\protected.pdf"), True),
+        (Path(r"\\?\UNC\server\share\protected.pdf"), True),
         (Path(r"C:\\Users\\user\\OneDrive\\protected.pdf"), True),
+        (Path(r"C:\\Users\\user\\OneDrive - Organización\\protected.pdf"), True),
         (Path(r"C:\\Users\\user\\Documents\\protected.pdf"), False),
     ],
 )
@@ -130,6 +135,27 @@ def test_detects_network_and_common_synced_paths_as_advisory(
 ) -> None:
     """Catches the UI warning heuristic missing selected remote/synced locations."""
     assert output_service.is_remote_or_synced(path) is expected
+
+
+def test_detects_a_windows_mapped_drive_as_advisory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catches mapped network drives bypassing the advisory warning."""
+    monkeypatch.setattr(output_service, "_windows_drive_type", lambda _path: 4)
+
+    assert output_service.is_remote_or_synced(Path(r"Z:\\protected.pdf")) is True
+
+
+def test_extended_local_windows_path_is_not_mistaken_for_unc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catches every extended-length path being classified as a remote share."""
+    monkeypatch.setattr(output_service, "_windows_drive_type", lambda _path: 3)
+
+    assert (
+        output_service.is_remote_or_synced(Path(r"\\?\C:\\local\protected.pdf"))
+        is False
+    )
 
 
 def test_missing_source_after_validation_never_publishes_a_destination(
@@ -230,6 +256,164 @@ def test_concurrent_destination_creation_is_not_overwritten_without_confirmation
     assert _digest(source) == source_digest
     assert destination.read_bytes() == concurrent_bytes
     assert _temporary_outputs(tmp_path) == []
+
+
+def test_cancellation_immediately_before_publication_keeps_destination_absent(
+    minimal_pdf_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Catches a cancellation checkpoint being skipped at the publish boundary."""
+    source = minimal_pdf_factory("source.pdf")
+    destination = tmp_path / "protected.pdf"
+    cancelled = False
+    original_verify = output_service._verify_encrypted_output
+
+    def verify_then_cancel(*args: object, **kwargs: object) -> None:
+        nonlocal cancelled
+        original_verify(*args, **kwargs)
+        cancelled = True
+
+    monkeypatch.setattr(output_service, "_verify_encrypted_output", verify_then_cancel)
+
+    with pytest.raises(CancelledError):
+        output_service.protect_to_destination(
+            _request(source, destination), is_cancelled=lambda: cancelled
+        )
+
+    assert not destination.exists()
+    assert _temporary_outputs(tmp_path) == []
+
+
+def test_cancellation_after_atomic_publication_keeps_committed_success(
+    minimal_pdf_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Catches a committed output being reported as cancelled after publication."""
+    source = minimal_pdf_factory("source.pdf")
+    destination = tmp_path / "protected.pdf"
+    cancelled = False
+    original_publish = output_service._publish_temporary
+
+    def publish_then_cancel(*args: object, **kwargs: object) -> None:
+        nonlocal cancelled
+        original_publish(*args, **kwargs)
+        cancelled = True
+
+    monkeypatch.setattr(output_service, "_publish_temporary", publish_then_cancel)
+
+    result = output_service.protect_to_destination(
+        _request(source, destination), is_cancelled=lambda: cancelled
+    )
+
+    assert result == output_service.ProcessingResult(destination=destination, pages=1)
+    assert destination.is_file()
+    assert _temporary_outputs(tmp_path) == []
+
+
+def test_disk_full_is_reported_with_a_distinct_safe_category(
+    minimal_pdf_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Catches disk exhaustion collapsing into a generic unwritable error."""
+    source = minimal_pdf_factory("source.pdf")
+    destination = tmp_path / "protected.pdf"
+
+    def disk_full(*_args: object, **_kwargs: object) -> object:
+        raise OSError(errno.ENOSPC, "sensitive operating system detail")
+
+    monkeypatch.setattr(output_service, "_create_temporary", disk_full)
+
+    with pytest.raises(DestinationError) as captured:
+        output_service.protect_to_destination(_request(source, destination))
+
+    assert captured.value.kind is DestinationErrorKind.DISK_FULL
+    assert "sensitive operating system detail" not in str(captured.value)
+
+
+def test_verification_and_publication_errors_have_distinct_categories(
+    minimal_pdf_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Catches verification and final-move failures becoming indistinguishable."""
+    invalid_temporary = tmp_path / "invalid-temporary.pdf"
+    invalid_temporary.write_bytes(b"not a PDF")
+    with pytest.raises(DestinationError) as verification:
+        output_service._verify_encrypted_output(
+            invalid_temporary, USER_PASSWORD, expected_pages=1
+        )
+    assert verification.value.kind is DestinationErrorKind.VERIFICATION
+
+    source = minimal_pdf_factory("source.pdf")
+    destination = tmp_path / "protected.pdf"
+
+    def fail_publication(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "sensitive publish detail")
+
+    monkeypatch.setattr(output_service.os, "rename", fail_publication)
+    with pytest.raises(DestinationError) as publication:
+        output_service.protect_to_destination(_request(source, destination))
+    assert publication.value.kind is DestinationErrorKind.PUBLICATION
+    assert "sensitive publish detail" not in str(publication.value)
+
+
+def test_memory_exhaustion_is_translated_and_removes_the_temporary(
+    minimal_pdf_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Catches MemoryError escaping with a traceback or leaving encrypted debris."""
+    source = minimal_pdf_factory("source.pdf")
+    destination = tmp_path / "protected.pdf"
+
+    def exhaust_memory(*_args: object, **_kwargs: object) -> int:
+        raise MemoryError("sensitive document allocation detail")
+
+    monkeypatch.setattr(output_service, "build_encrypted_pdf", exhaust_memory)
+
+    with pytest.raises(MemoryLimitError):
+        output_service.protect_to_destination(_request(source, destination))
+
+    assert not destination.exists()
+    assert _temporary_outputs(tmp_path) == []
+
+
+def test_cleanup_failure_warns_without_replacing_the_primary_error(
+    minimal_pdf_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Catches silent cleanup failure or cleanup replacing the useful primary error."""
+    source = minimal_pdf_factory("source.pdf")
+    destination = tmp_path / "protected.pdf"
+    warnings: list[str] = []
+    secret = "contraseña-que-no-debe-aparecer"
+
+    def disk_full(*_args: object, **_kwargs: object) -> int:
+        raise OSError(errno.ENOSPC, "primary disk-full detail")
+
+    def reject_cleanup(
+        _path: Path, *, missing_ok: bool = False
+    ) -> None:
+        assert missing_ok is True
+        raise PermissionError(f"cleanup detail {secret}")
+
+    monkeypatch.setattr(output_service, "build_encrypted_pdf", disk_full)
+    monkeypatch.setattr(output_service.Path, "unlink", reject_cleanup)
+
+    with pytest.raises(DestinationError) as captured:
+        output_service.protect_to_destination(
+            _request(source, destination), on_warning=warnings.append
+        )
+
+    assert captured.value.kind is DestinationErrorKind.DISK_FULL
+    assert warnings == [
+        "No se pudo eliminar un archivo temporal de forma automática."
+    ]
+    assert secret not in warnings[0]
 
 
 @pytest.mark.parametrize("failure", ["save", "verify", "cancel"])

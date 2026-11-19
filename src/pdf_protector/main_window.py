@@ -31,12 +31,10 @@ from pdf_protector.domain import (
     PasswordCompatibilityError,
     PdfPermissions,
     ProcessingResult,
-    ProtectionError,
     ProtectionRequest,
 )
 from pdf_protector.output_service import is_remote_or_synced
 from pdf_protector.passwords import validate_password_pair
-from pdf_protector.pdf_service import inspect_source
 from pdf_protector.worker import ProtectionWorker
 
 
@@ -56,6 +54,7 @@ class MainWindow(QMainWindow):
     """The application's complete linear protection workflow."""
 
     cancellation_requested = Signal()
+    signature_decision = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,6 +62,7 @@ class MainWindow(QMainWindow):
         self._worker: ProtectionWorker | None = None
         self._progress_dialog: QProgressDialog | None = None
         self._pending_outcome: tuple[str, object | None] | None = None
+        self._cleanup_warnings: list[str] = []
         self._closing = False
 
         self.setWindowTitle("Protección de documentos PDF")
@@ -334,6 +334,16 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    def _scrub_password_fields(self) -> None:
+        """Erase password text and QLineEdit's undo/redo history."""
+        self.password_edit.setText("")
+        self.confirmation_edit.setText("")
+        self.show_password_button.setChecked(False)
+
+    def _abort_with_warning(self, title: str, text: str) -> None:
+        self._scrub_password_fields()
+        self._show_warning(title, text)
+
     @Slot()
     def _update_controls(self) -> None:
         processing = self._thread is not None
@@ -394,37 +404,30 @@ class MainWindow(QMainWindow):
                 self.password_edit.text(), self.confirmation_edit.text()
             )
         except PasswordCompatibilityError as error:
-            self._show_warning("Contraseña no válida", str(error))
+            self._abort_with_warning("Contraseña no válida", str(error))
             return
 
         sources = self.source_paths()
         if not sources:
-            self._show_warning(
+            self._abort_with_warning(
                 "Sin archivos", "Debe seleccionar al menos un archivo PDF."
             )
             return
 
-        try:
-            inspections = [inspect_source(path) for path in sources]
-        except ProtectionError as error:
-            self._show_warning("No se puede usar el archivo", str(error))
-            return
-
-        signed_names = [item.path.name for item in inspections if item.has_signatures]
-        if signed_names and not self._confirm(
-            "Firmas digitales detectadas",
-            "Las firmas digitales dejarán de ser válidas al crear el nuevo PDF. "
-            "Archivos: "
-            + ", ".join(signed_names)
-            + ". ¿Desea continuar?",
-        ):
+        missing_source = next((path for path in sources if not path.is_file()), None)
+        if missing_source is not None:
+            self._abort_with_warning(
+                "No se puede usar el archivo",
+                f"No se pudo abrir el PDF de origen '{missing_source.name}'.",
+            )
             return
 
         destination = self._choose_destination()
         if destination is None:
+            self._scrub_password_fields()
             return
         if _path_key(destination) in {_path_key(path) for path in sources}:
-            self._show_warning(
+            self._abort_with_warning(
                 "Destino no válido",
                 "El destino no puede reemplazar un archivo original seleccionado.",
             )
@@ -436,6 +439,7 @@ class MainWindow(QMainWindow):
             "El servicio correspondiente podría transmitir el resultado. "
             "¿Desea continuar?",
         ):
+            self._scrub_password_fields()
             return
 
         overwrite_confirmed = destination.exists()
@@ -443,6 +447,7 @@ class MainWindow(QMainWindow):
             "Reemplazar archivo",
             f'El archivo "{destination.name}" ya existe. ¿Desea reemplazarlo?',
         ):
+            self._scrub_password_fields()
             return
 
         request = ProtectionRequest(
@@ -461,6 +466,7 @@ class MainWindow(QMainWindow):
         self, request: ProtectionRequest, *, overwrite_confirmed: bool
     ) -> None:
         self._pending_outcome = None
+        self._cleanup_warnings = []
         thread = QThread(self)
         worker = ProtectionWorker(
             request, overwrite_confirmed=overwrite_confirmed
@@ -486,15 +492,24 @@ class MainWindow(QMainWindow):
         worker.succeeded.connect(self._record_success)
         worker.failed.connect(self._record_failure)
         worker.cancelled.connect(self._record_cancellation)
+        worker.warning.connect(self._record_warning)
+        worker.signature_confirmation_required.connect(
+            self._confirm_signature_invalidation
+        )
         worker.succeeded.connect(worker.deleteLater)
         worker.failed.connect(worker.deleteLater)
         worker.cancelled.connect(worker.deleteLater)
         self.cancellation_requested.connect(
             worker.cancel, Qt.ConnectionType.DirectConnection
         )
+        self.signature_decision.connect(
+            worker.resolve_signature_confirmation,
+            Qt.ConnectionType.DirectConnection,
+        )
         thread.finished.connect(self._thread_finished)
         thread.finished.connect(thread.deleteLater)
 
+        self._scrub_password_fields()
         self._update_controls()
         progress.show()
         thread.start()
@@ -526,6 +541,26 @@ class MainWindow(QMainWindow):
         self._pending_outcome = ("cancelled", None)
         self._stop_thread()
 
+    @Slot(str)
+    def _record_warning(self, message: str) -> None:
+        self._cleanup_warnings.append(message)
+
+    @Slot(object)
+    def _confirm_signature_invalidation(self, names: object) -> None:
+        signed_names = (
+            tuple(str(name) for name in names) if isinstance(names, tuple) else ()
+        )
+        accepted = self._confirm(
+            "Firmas digitales detectadas",
+            "Las firmas digitales dejarán de ser válidas al crear el nuevo PDF. "
+            "Archivos: "
+            + ", ".join(signed_names)
+            + ". ¿Desea continuar?",
+        )
+        if not accepted and self._progress_dialog is not None:
+            self._progress_dialog.setLabelText("Cancelando…")
+        self.signature_decision.emit(accepted)
+
     def _stop_thread(self) -> None:
         if self._thread is not None:
             self._thread.quit()
@@ -541,6 +576,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _thread_finished(self) -> None:
         outcome = self._pending_outcome
+        cleanup_warnings = tuple(self._cleanup_warnings)
         progress = self._progress_dialog
         if progress is not None:
             progress.hide()
@@ -549,9 +585,8 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._thread = None
         self._pending_outcome = None
-        self.password_edit.clear()
-        self.confirmation_edit.clear()
-        self.show_password_button.setChecked(False)
+        self._cleanup_warnings = []
+        self._scrub_password_fields()
         self._update_controls()
 
         if self._closing:
@@ -561,10 +596,19 @@ class MainWindow(QMainWindow):
             return
         kind, value = outcome
         if kind == "success" and isinstance(value, ProcessingResult):
+            if cleanup_warnings:
+                self._show_warning(
+                    "Limpieza incompleta", "\n".join(cleanup_warnings)
+                )
             if self._ask_open_folder(value):
                 self._open_destination_folder(value.destination)
         elif kind == "failure" and isinstance(value, str):
-            self._show_warning("No se pudo crear el PDF", value)
+            message = value
+            if cleanup_warnings:
+                message += "\n\nAdvertencia: " + " ".join(cleanup_warnings)
+            self._show_warning("No se pudo crear el PDF", message)
+        elif kind == "cancelled" and cleanup_warnings:
+            self._show_warning("Limpieza incompleta", "\n".join(cleanup_warnings))
 
     def _show_information(self, title: str, text: str) -> None:
         QMessageBox.information(self, title, text)

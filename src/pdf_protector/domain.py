@@ -1,6 +1,7 @@
 """Shared domain types and errors for PDF protection workflows."""
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 
@@ -15,13 +16,41 @@ class ValidationError(ProtectionError):
 class SourcePdfError(ProtectionError):
     """Raised when a source PDF cannot be inspected or processed."""
 
+    def __init__(self, message: str, *, path: Path | None = None) -> None:
+        super().__init__(message)
+        self.path = path
+
 
 class PasswordCompatibilityError(ProtectionError):
     """Raised when a password is incompatible with PDF encryption."""
 
 
+class DestinationErrorKind(StrEnum):
+    """Safe categories used to produce actionable destination diagnostics."""
+
+    GENERAL = "general"
+    INVALID = "invalid"
+    UNWRITABLE = "unwritable"
+    DISK_FULL = "disk_full"
+    VERIFICATION = "verification"
+    PUBLICATION = "publication"
+
+
 class DestinationError(ProtectionError):
     """Raised when the selected destination cannot be used."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: DestinationErrorKind = DestinationErrorKind.GENERAL,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+class MemoryLimitError(ProtectionError):
+    """Raised when available memory cannot hold the in-memory PDF workflow."""
 
 
 class CancelledError(ProtectionError):

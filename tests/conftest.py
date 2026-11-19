@@ -92,6 +92,26 @@ def encrypted_pdf_factory(tmp_path: Path) -> PdfFactory:
 
 
 @pytest.fixture
+def blank_user_encrypted_pdf_factory(tmp_path: Path) -> PdfFactory:
+    def create(name: str = "blank-user-encrypted.pdf") -> Path:
+        path = tmp_path / name
+        with pikepdf.Pdf.new() as document:
+            _add_text_page(document, "BLANK-USER-ENCRYPTED")
+            document.save(
+                path,
+                encryption=pikepdf.Encryption(
+                    user="",
+                    owner="source-owner-password",
+                    R=6,
+                    aes=True,
+                ),
+            )
+        return path
+
+    return create
+
+
+@pytest.fixture
 def damaged_pdf_factory(tmp_path: Path) -> PdfFactory:
     def create(name: str = "damaged.pdf") -> Path:
         path = tmp_path / name
@@ -258,6 +278,101 @@ def active_pdf_factory(tmp_path: Path) -> PdfFactory:
             document.Root.AcroForm = pikepdf.Dictionary(
                 Fields=pikepdf.Array([widget]), NeedAppearances=False
             )
+            document.save(path)
+        return path
+
+    return create
+
+
+@pytest.fixture
+def nested_xobject_pdf_factory(tmp_path: Path) -> PdfFactory:
+    """Create active payloads reachable only through nested Form XObjects."""
+
+    def create(name: str = "nested-xobject-active.pdf") -> Path:
+        path = tmp_path / name
+        with pikepdf.Pdf.new() as document:
+            page = _add_text_page(document, "VISIBLE-PAGE")
+
+            embedded = document.make_stream(b"NESTED-EMBEDDED-PAYLOAD")
+            embedded.Type = pikepdf.Name.EmbeddedFile
+            filespec = document.make_indirect(
+                pikepdf.Dictionary(
+                    Type=pikepdf.Name.Filespec,
+                    F=pikepdf.String("nested-payload.bin"),
+                    EF=pikepdf.Dictionary(F=embedded),
+                )
+            )
+            metadata = document.make_stream(b"NESTED-XOBJECT-METADATA")
+            metadata.Type = pikepdf.Name.Metadata
+            metadata.Subtype = pikepdf.Name.XML
+            javascript = document.make_indirect(
+                pikepdf.Dictionary(
+                    S=pikepdf.Name.JavaScript,
+                    JS=pikepdf.String("app.alert('nested unsafe action')"),
+                )
+            )
+            rich_media_action = document.make_indirect(
+                pikepdf.Dictionary(
+                    Type=pikepdf.Name.Action,
+                    S=pikepdf.Name.RichMediaExecute,
+                )
+            )
+
+            inner = document.make_stream(
+                b"q 0 0.7 0 rg 0 0 40 20 re f % NESTED-VISIBLE-XOBJECT\nQ\n"
+            )
+            inner.Type = pikepdf.Name.XObject
+            inner.Subtype = pikepdf.Name.Form
+            inner.BBox = pikepdf.Array([0, 0, 40, 20])
+            inner.Resources = pikepdf.Dictionary(
+                UnsafeGraph=pikepdf.Dictionary(
+                    AF=pikepdf.Array([filespec]),
+                    HiddenAction=rich_media_action,
+                )
+            )
+            inner.Metadata = metadata
+            inner.AA = pikepdf.Dictionary(O=javascript)
+
+            outer = document.make_stream(b"q /Inner Do Q\n")
+            outer.Type = pikepdf.Name.XObject
+            outer.Subtype = pikepdf.Name.Form
+            outer.BBox = pikepdf.Array([0, 0, 40, 20])
+            outer.Resources = pikepdf.Dictionary(
+                XObject=pikepdf.Dictionary(Inner=inner)
+            )
+
+            page.Resources.XObject = pikepdf.Dictionary(Outer=outer)
+            page.Contents = pikepdf.Array(
+                [page.Contents, document.make_stream(b"q /Outer Do Q\n")]
+            )
+            document.save(path)
+        return path
+
+    return create
+
+
+@pytest.fixture
+def malformed_signature_pdf_factory(tmp_path: Path) -> PdfFactory:
+    def create(name: str = "malformed-signature-fields.pdf") -> Path:
+        path = tmp_path / name
+        with pikepdf.Pdf.new() as document:
+            _add_text_page(document, "MALFORMED-SIGNATURE")
+            document.Root.AcroForm = pikepdf.Dictionary(
+                Fields=pikepdf.Array([pikepdf.String("not-a-field-dictionary")])
+            )
+            document.save(path)
+        return path
+
+    return create
+
+
+@pytest.fixture
+def malformed_annotation_pdf_factory(tmp_path: Path) -> PdfFactory:
+    def create(name: str = "malformed-annotation-array.pdf") -> Path:
+        path = tmp_path / name
+        with pikepdf.Pdf.new() as document:
+            page = _add_text_page(document, "MALFORMED-ANNOTATION")
+            page.Annots = pikepdf.Array([pikepdf.String("not-an-annotation")])
             document.save(path)
         return path
 

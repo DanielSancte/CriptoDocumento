@@ -75,3 +75,22 @@ def test_password_with_unpaired_surrogate_raises_compatibility_error() -> None:
     """Catches qpdf runtime failures leaking past the compatibility boundary."""
     with pytest.raises(PasswordCompatibilityError):
         passwords.validate_pdf_password(chr(0xD800))
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        "a" * 127,
+        "  Clave Ñandú 🔐 con espacios  ",
+    ],
+    ids=["127-ascii-bytes", "unicode-literal"],
+)
+def test_password_probe_reopens_with_the_exact_accepted_password(password: str) -> None:
+    """Catches a compatibility probe that saves but never verifies exact reopening."""
+    passwords.validate_pdf_password(password)
+
+
+def test_password_probe_rejects_128_ascii_bytes_that_do_not_round_trip() -> None:
+    """Catches accepting qpdf's non-round-tripping 128-byte password boundary."""
+    with pytest.raises(PasswordCompatibilityError):
+        passwords.validate_pdf_password("a" * 128)

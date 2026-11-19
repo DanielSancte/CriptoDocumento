@@ -6,6 +6,8 @@ import pytest
 from pdf_protector.domain import (
     CancelledError,
     DestinationError,
+    DestinationErrorKind,
+    MemoryLimitError,
     PasswordCompatibilityError,
     PdfPermissions,
     ProcessingResult,
@@ -83,3 +85,29 @@ def test_domain_result_types_keep_their_declared_values() -> None:
 def test_domain_errors_share_protection_error_base(error_type: type[ProtectionError]) -> None:
     """Catches errors escaping the common protection-error handling path."""
     assert isinstance(error_type("failure"), ProtectionError)
+
+
+def test_source_error_retains_the_exact_offending_path() -> None:
+    """Catches diagnostics guessing the first source instead of carrying the culprit."""
+    source = Path("second-source.pdf")
+
+    error = SourcePdfError("safe source message", path=source)
+
+    assert error.path == source
+    assert str(error) == "safe source message"
+
+
+@pytest.mark.parametrize("kind", list(DestinationErrorKind))
+def test_destination_error_retains_its_safe_failure_category(
+    kind: DestinationErrorKind,
+) -> None:
+    """Catches distinct destination failures collapsing before UI translation."""
+    error = DestinationError("safe destination message", kind=kind)
+
+    assert error.kind is kind
+    assert str(error) == "safe destination message"
+
+
+def test_memory_limit_error_uses_the_expected_error_boundary() -> None:
+    """Catches memory exhaustion escaping the safe ProtectionError path."""
+    assert isinstance(MemoryLimitError("memory exhausted"), ProtectionError)

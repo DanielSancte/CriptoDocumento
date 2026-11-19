@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import ctypes
+import errno
 import os
 from pathlib import Path
 import tempfile
@@ -14,6 +16,8 @@ from pikepdf.models.encryption import EncryptionMethod
 from pdf_protector.domain import (
     CancelledError,
     DestinationError,
+    DestinationErrorKind,
+    MemoryLimitError,
     ProcessingResult,
     ProtectionRequest,
     SourcePdfError,
@@ -32,6 +36,26 @@ _SYNCED_DIRECTORY_NAMES = frozenset(
         "sharepoint",
     }
 )
+_REMOTE_DRIVE = 4
+_CLEANUP_WARNING = "No se pudo eliminar un archivo temporal de forma automática."
+
+
+def _windows_drive_type(path: Path) -> int | None:
+    """Return Windows' drive type for a rooted drive path when available."""
+    if os.name != "nt":
+        return None
+    text_path = str(path).replace("/", "\\")
+    if text_path.casefold().startswith("\\\\?\\unc\\"):
+        return _REMOTE_DRIVE
+    if text_path.casefold().startswith("\\\\?\\"):
+        text_path = text_path[4:]
+    drive = Path(text_path).drive
+    if len(drive) != 2 or drive[1] != ":":
+        return None
+    try:
+        return int(ctypes.windll.kernel32.GetDriveTypeW(f"{drive}\\"))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
 
 
 def is_remote_or_synced(path: Path) -> bool:
@@ -40,10 +64,19 @@ def is_remote_or_synced(path: Path) -> bool:
     This result is advisory for the UI; it must never reject an accessible
     destination explicitly selected by the user.
     """
-    text_path = str(path)
-    if text_path.startswith("\\\\"):
+    text_path = str(path).replace("/", "\\")
+    folded_path = text_path.casefold()
+    if folded_path.startswith("\\\\?\\unc\\"):
         return True
-    return any(part.casefold() in _SYNCED_DIRECTORY_NAMES for part in path.parts)
+    if folded_path.startswith("\\\\") and not folded_path.startswith("\\\\?\\"):
+        return True
+    for part in path.parts:
+        folded_part = part.casefold()
+        if folded_part in _SYNCED_DIRECTORY_NAMES or folded_part.startswith(
+            ("onedrive - ", "onedrive – ", "onedrive — ")
+        ):
+            return True
+    return _windows_drive_type(path) == _REMOTE_DRIVE
 
 
 def _raise_if_cancelled(is_cancelled: Callable[[], bool]) -> None:
@@ -56,14 +89,24 @@ def _validate_request_and_destination(
 ) -> None:
     destination = request.destination
     if destination.suffix.casefold() != ".pdf":
-        raise DestinationError("El archivo de destino debe tener extensión PDF.")
+        raise DestinationError(
+            "El archivo de destino debe tener extensión PDF.",
+            kind=DestinationErrorKind.INVALID,
+        )
     if not destination.parent.is_dir():
-        raise DestinationError("La carpeta de destino no existe.")
+        raise DestinationError(
+            "La carpeta de destino no existe.", kind=DestinationErrorKind.INVALID
+        )
     if destination.exists() and not overwrite_confirmed:
-        raise DestinationError("El archivo de destino ya existe y no fue confirmado.")
+        raise DestinationError(
+            "El archivo de destino ya existe y no fue confirmado.",
+            kind=DestinationErrorKind.INVALID,
+        )
     for source in request.sources:
         if not source.is_file():
-            raise SourcePdfError(f"No se pudo abrir el PDF de origen '{source.name}'.")
+            raise SourcePdfError(
+                f"No se pudo abrir el PDF de origen '{source.name}'.", path=source
+            )
 
 
 def _verify_encrypted_output(
@@ -82,11 +125,13 @@ def _verify_encrypted_output(
                 or encryption.string_method is not EncryptionMethod.aesv3
             ):
                 raise DestinationError(
-                    "La verificación final del PDF cifrado no fue satisfactoria."
+                    "La verificación final del PDF cifrado no fue satisfactoria.",
+                    kind=DestinationErrorKind.VERIFICATION,
                 )
     except (OSError, pikepdf.PasswordError, pikepdf.PdfError, ValueError) as error:
         raise DestinationError(
-            "No se pudo verificar el PDF protegido antes de publicarlo."
+            "No se pudo verificar el PDF protegido antes de publicarlo.",
+            kind=DestinationErrorKind.VERIFICATION,
         ) from error
 
 
@@ -116,8 +161,52 @@ def _publish_temporary(
         os.rename(temporary, destination)
     except FileExistsError as error:
         raise DestinationError(
-            "El archivo de destino ya existe y no fue confirmado."
+            "El archivo de destino ya existe y no fue confirmado.",
+            kind=DestinationErrorKind.INVALID,
         ) from error
+
+
+def _kind_for_os_error(
+    error: OSError,
+    *,
+    default: DestinationErrorKind,
+) -> DestinationErrorKind:
+    if error.errno == errno.ENOSPC or getattr(error, "winerror", None) == 112:
+        return DestinationErrorKind.DISK_FULL
+    if isinstance(error, PermissionError) or error.errno in {
+        errno.EACCES,
+        errno.EPERM,
+        errno.EROFS,
+    }:
+        return DestinationErrorKind.UNWRITABLE
+    return default
+
+
+def _destination_error_from_os(
+    error: OSError,
+    *,
+    default: DestinationErrorKind,
+) -> DestinationError:
+    kind = _kind_for_os_error(error, default=default)
+    if kind is DestinationErrorKind.DISK_FULL:
+        message = "No hay espacio suficiente para crear el PDF protegido."
+    elif kind is DestinationErrorKind.UNWRITABLE:
+        message = "No se puede escribir en la carpeta de destino seleccionada."
+    elif kind is DestinationErrorKind.PUBLICATION:
+        message = "No se pudo publicar el PDF protegido en el destino seleccionado."
+    else:
+        message = "No se pudo escribir el PDF protegido en el destino seleccionado."
+    return DestinationError(message, kind=kind)
+
+
+def _report_cleanup_warning(on_warning: Callable[[str], None] | None) -> None:
+    if on_warning is None:
+        return
+    try:
+        on_warning(_CLEANUP_WARNING)
+    except Exception:
+        # A reporting callback must never replace the primary processing result.
+        return
 
 
 def protect_to_destination(
@@ -126,6 +215,7 @@ def protect_to_destination(
     overwrite_confirmed: bool = False,
     is_cancelled: Callable[[], bool] = lambda: False,
     on_progress: Callable[[int, int], None] | None = None,
+    on_warning: Callable[[str], None] | None = None,
 ) -> ProcessingResult:
     """Build, verify, then atomically publish an encrypted PDF destination."""
     _raise_if_cancelled(is_cancelled)
@@ -146,8 +236,12 @@ def protect_to_destination(
                 sink.flush()
                 os.fsync(sink.fileno())
         except OSError as error:
-            raise DestinationError(
-                "No se pudo escribir en la carpeta de destino seleccionada."
+            raise _destination_error_from_os(
+                error, default=DestinationErrorKind.UNWRITABLE
+            ) from error
+        except MemoryError as error:
+            raise MemoryLimitError(
+                "No hay memoria suficiente para procesar los documentos PDF."
             ) from error
 
         _raise_if_cancelled(is_cancelled)
@@ -156,12 +250,16 @@ def protect_to_destination(
         _publish_temporary(temporary, request.destination, overwrite_confirmed)
         return ProcessingResult(destination=request.destination, pages=pages)
     except OSError as error:
-        raise DestinationError(
-            "No se pudo publicar el PDF protegido en el destino seleccionado."
+        raise _destination_error_from_os(
+            error, default=DestinationErrorKind.PUBLICATION
+        ) from error
+    except MemoryError as error:
+        raise MemoryLimitError(
+            "No hay memoria suficiente para procesar los documentos PDF."
         ) from error
     finally:
         if temporary is not None:
             try:
                 temporary.unlink(missing_ok=True)
             except OSError:
-                pass
+                _report_cleanup_warning(on_warning)

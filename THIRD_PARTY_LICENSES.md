@@ -9,23 +9,34 @@ Cuando una biblioteca está enlazada dentro de otro binario y este no expone
 una versión propia, se indica **incluida; versión no declarada por separado**.
 No se infieren versiones desde otro wheel o desde el equipo de desarrollo.
 
-Los avisos completos que el wheel de pikepdf sí incorpora al artefacto están
-en `_internal/pikepdf-10.18.2.dist-info/licenses/`.
+El build crea `LICENSES/` en la raíz del artefacto y copia allí los textos
+aplicables disponibles en los runtimes fijados, no solo enlaces web:
+
+- `CPython-3.12.2-LICENSE.txt`, que incluye los avisos de terceros de CPython;
+- `GNU-LGPL-3.0.txt`, `GNU-GPL-3.0.txt` y
+  `Qt-PySide6-SOURCE-INFORMATION.txt` para Qt/PySide6/shiboken6;
+- los textos consolidados de Pillow 13.0.0 y lxml 6.1.3;
+- los directorios de avisos de pikepdf 10.18.2 y packaging 26.3; y
+- los textos de typing-extensions 4.16.0 y del bootloader de PyInstaller
+  6.22.3.
+
+Los avisos completos que el wheel de pikepdf incorpora permanecen además en
+`_internal/pikepdf-10.18.2.dist-info/licenses/`.
 
 ## Componentes Python y Qt redistribuidos
 
 | Componente | Versión comprobada | Licencia o expresión declarada | Fuente autoritativa o upstream |
 | --- | ---: | --- | --- |
-| CPython y biblioteca estándar | 3.12.2 x64 | Python Software Foundation License Version 2 (PSF-2.0), con los avisos de terceros de CPython | [Historia y licencia de Python 3.12](https://docs.python.org/3.12/license.html) |
-| PySide6 / Qt for Python y PySide6-Essentials | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | [Licencias de Qt for Python](https://doc.qt.io/qtforpython-6/licenses.html) |
-| shiboken6 | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | [Shiboken](https://doc.qt.io/qtforpython-6/shiboken6/) |
+| CPython y biblioteca estándar | 3.12.2 x64 | Python Software Foundation License Version 2 (PSF-2.0), con los avisos de terceros de CPython | `LICENSES/CPython-3.12.2-LICENSE.txt` y [fuente CPython 3.12.2](https://www.python.org/downloads/release/python-3122/) |
+| PySide6 / Qt for Python y PySide6-Essentials | 6.12.0 | Se distribuye bajo la opción LGPL-3.0-only; el metadato también ofrece GPL-2.0-only o GPL-3.0-only | `LICENSES/GNU-LGPL-3.0.txt`, `LICENSES/GNU-GPL-3.0.txt`, `LICENSES/Qt-PySide6-SOURCE-INFORMATION.txt` y [licencias de Qt for Python](https://doc.qt.io/qtforpython-6/licenses.html) |
+| shiboken6 | 6.12.0 | Se distribuye bajo la opción LGPL-3.0-only; el metadato también ofrece GPL-2.0-only o GPL-3.0-only | Los mismos textos e información de fuente locales de la fila anterior |
 | Código `bufferprocs_py37.cpp`/`.h` de Python incorporado por libshiboken | 3.7.0 | PSF License Agreement for Python 3.7.0 | [Inventario oficial de licencias de Qt for Python](https://doc.qt.io/qtforpython-6/licenses.html) |
-| pikepdf | 10.18.2 | MPL-2.0 | Aviso incluido `pikepdf-10.18.2.dist-info/licenses/LICENSE.txt` y [fuente de pikepdf](https://github.com/pikepdf/pikepdf) |
-| Pillow | 13.0.0 | MIT-CMU | [LICENSE de Pillow 13.0.0](https://github.com/python-pillow/Pillow/blob/13.0.0/LICENSE) |
-| lxml | 6.1.3 | BSD-3-Clause, más las bibliotecas y recursos detallados abajo | [Licencias de lxml 6.1.3](https://github.com/lxml/lxml/tree/lxml-6.1.3/doc/licenses) |
-| packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | [Licencias de packaging 26.3](https://github.com/pypa/packaging/tree/26.3/LICENSES) |
-| typing-extensions | 4.16.0 | PSF-2.0 | [LICENSE de typing_extensions 4.16.0](https://github.com/python/typing_extensions/blob/4.16.0/LICENSE) |
-| Bootloader de PyInstaller | 6.22.3 | GPL-2.0-or-later con la excepción especial de PyInstaller para distribuir las aplicaciones resultantes | [Licencia de PyInstaller](https://pyinstaller.org/en/stable/license.html) |
+| pikepdf | 10.18.2 | MPL-2.0 | `LICENSES/pikepdf-10.18.2/`, copia completa de los avisos del wheel, y [fuente de pikepdf](https://github.com/pikepdf/pikepdf) |
+| Pillow | 13.0.0 | MIT-CMU y avisos consolidados de los códecs incorporados | `LICENSES/Pillow-13.0.0-LICENSE.txt` y [fuente 13.0.0](https://github.com/python-pillow/Pillow/tree/13.0.0) |
+| lxml | 6.1.3 | BSD-3-Clause, más las bibliotecas y recursos detallados abajo | `LICENSES/lxml-6.1.3-LICENSE.txt`, `LICENSES/lxml-6.1.3-THIRD-PARTY-LICENSES.txt` y [fuente 6.1.3](https://github.com/lxml/lxml/tree/lxml-6.1.3) |
+| packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | `LICENSES/packaging-26.3/` y [fuente 26.3](https://github.com/pypa/packaging/tree/26.3) |
+| typing-extensions | 4.16.0 | PSF-2.0 | `LICENSES/typing-extensions-4.16.0-LICENSE.txt` y [fuente 4.16.0](https://github.com/python/typing_extensions/tree/4.16.0) |
+| Bootloader de PyInstaller | 6.22.3 | GPL-2.0-or-later con la excepción especial de PyInstaller para distribuir las aplicaciones resultantes | `LICENSES/PyInstaller-6.22.3-COPYING.txt` y [licencia de PyInstaller](https://pyinstaller.org/en/stable/license.html) |
 
 El artefacto contiene únicamente los módulos Qt 6.12 `Core`, `Gui`, `Network`,
 `Svg` y `Widgets`, sus bindings, traducciones y estos grupos de plugins:
@@ -226,3 +237,15 @@ y [redistribución de archivos Visual C++](https://learn.microsoft.com/en-us/cpp
 
 Este inventario técnico no es asesoría jurídica. Los textos y enlaces de los
 titulares son la fuente autoritativa de sus términos.
+
+## Limitación de revisión legal pendiente
+
+Los wheels de PySide6 6.12.0 usados por este build declaran las opciones
+LGPL/GPL, pero no traen un paquete consolidado con el texto íntegro de cada
+licencia de los componentes de terceros incorporados en las DLL de Qt. Este
+inventario identifica esos componentes y el paquete incluye la LGPL/GPL y la
+información exacta para obtener el código fuente Qt/PySide 6.12.0, pero todavía
+requiere revisión legal determinar cuáles de los avisos/textos individuales
+de los archivos fuente Qt deben extraerse y añadirse al entregable. Por tanto,
+este documento no afirma cumplimiento legal completo para distribución
+externa hasta que esa revisión se cierre.

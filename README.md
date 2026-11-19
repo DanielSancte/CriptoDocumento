@@ -29,7 +29,7 @@ La aplicación procesa los orígenes en memoria y escribe primero un archivo tem
 - Las restricciones de impresión, copia y edición son indicaciones para lectores PDF compatibles; no impiden capturas de pantalla ni herramientas que decidan ignorarlas.
 - Una ubicación de red o sincronizada (por ejemplo OneDrive, SharePoint, Dropbox, Box o Google Drive) genera una advertencia orientativa. Para reducir conflictos, guarde primero en una carpeta local y copie el resultado después.
 - Combinar, aplanar o volver a cifrar un PDF invalida sus firmas digitales. La aplicación advierte antes de continuar cuando detecta firmas.
-- Se eliminan contenido activo, adjuntos y metadatos; las apariencias de anotaciones y formularios se aplanan. Un formulario XFA o una apariencia que no pueda conservarse con seguridad se rechaza.
+- Se recorren de forma segura todos los objetos alcanzables del resultado y se eliminan contenido activo, adjuntos y metadatos, incluso dentro de XObject anidados; las apariencias de anotaciones y formularios se aplanan. Un formulario XFA, una estructura malformada o una apariencia que no pueda conservarse con seguridad se rechaza con el nombre del origen.
 - El uso de memoria crece con el tamaño y la complejidad de los documentos. No se ha medido todavía un máximo de entrada ni de memoria, por lo que esta versión no declara un tamaño recomendado.
 
 ## Construcción reproducible
@@ -48,7 +48,7 @@ El workflow de GitHub Actions ejecuta el mismo script en Windows y sube esa carp
 
 ### Evidencia local automatizada
 
-El 19 de noviembre de 2026, `scripts/build.ps1` se ejecutó en un host de desarrollo Windows NT x64 build 26200.9457 con CPython 3.12.2 x64. El script recreó su entorno aislado, ejecutó **84 pruebas fuente** y **2 pruebas del paquete**, y generó `dist/ProtectorPDF/ProtectorPDF.exe` junto con este README y los avisos de licencias.
+El 19 de noviembre de 2026, `scripts/build.ps1` se ejecutó en un host de desarrollo Windows NT x64 build 26200.9457 con CPython 3.12.2 x64. El script recreó su entorno aislado, ejecutó **127 pruebas fuente** y **3 pruebas del paquete**, y generó `dist/ProtectorPDF/ProtectorPDF.exe` junto con este README, el inventario y la carpeta `LICENSES` de textos de licencia e información de fuente.
 
 El smoke ejecutó el `.exe` real con `--smoke-test`, cargó Qt 6.12.0 y pikepdf 10.18.2/qpdf 12.4.2, creó un PDF de una página, rechazó una contraseña incorrecta y confirmó AES-256 revisión 6. La contraseña sintética del smoke no apareció en `stdout`, `stderr` ni en el informe JSON. Esta evidencia demuestra el paquete local; **no sustituye** una aceptación manual en una instalación limpia.
 
@@ -63,13 +63,13 @@ Las referencias siguientes son pruebas automatizadas de la suite fuente. «Pendi
 | 3 | Solo abre con la contraseña elegida. | `test_encrypt_requires_the_user_password_and_uses_aes256_revision_6` y el smoke del paquete rechazan una contraseña incorrecta. | Aprobado automatizado |
 | 4 | El resultado usa AES-256. | `test_encrypt_requires_the_user_password_and_uses_aes256_revision_6` inspecciona 256 bits, revisión 6 y AESV3. | Aprobado automatizado |
 | 5 | Las ocho combinaciones de permisos se traducen al PDF. | `test_permissions_map_all_eight_policies_exactly`. | Aprobado automatizado |
-| 6 | Una contraseña con espacios y Unicode funciona literalmente. | `tests/test_passwords.py::test_password_validation_passes_spaces_and_unicode_to_qpdf_literally` y `test_worker_request_preserves_literal_password_and_distinguishes_permission_choices`. | Aprobado automatizado |
-| 7 | Una contraseña no representable se rechaza sin modificarla. | `test_password_qpdf_rejects_raises_compatibility_error` y `test_password_with_unpaired_surrogate_raises_compatibility_error`. | Aprobado automatizado |
-| 8 | La contraseña no llega a registros ni archivos auxiliares. | `tests/test_packaged_app.py::test_packaged_smoke_loads_qt_and_pikepdf_and_produces_aes256` comprueba salida y reporte; `tests/test_worker.py::test_worker_translates_expected_errors_without_exposing_sensitive_details` comprueba mensajes sin secreto. | Aprobado automatizado |
-| 9 | No persisten contenido activo, adjuntos ni metadatos; las apariencias se aplanan. | `test_sanitize_removes_active_content_and_flattens_visible_appearances`; las pruebas de XFA/apariencia no segura rechazan pérdidas silenciosas. | Aprobado automatizado |
-| 10 | Se advierte la invalidación de firmas. | `test_inspect_detects_signature_fields_and_certification_signatures` y `test_signature_warning_is_confirmed_before_destination_selection`. | Aprobado automatizado |
-| 11 | No se escribe una combinación sin cifrar en disco. | `test_publishes_only_a_verified_aes256_temporary_by_atomic_claim` abre el temporal, verifica AES-256 y solo después observa el renombre atómico. | Aprobado automatizado |
-| 12 | Un origen dañado o protegido informa el error y no publica una salida parcial. | `test_inspect_reports_known_source_errors_with_the_file_name`, `test_missing_source_after_validation_never_publishes_a_destination` y `test_failures_leave_no_new_destination_and_preserve_an_existing_one`. | Aprobado automatizado |
+| 6 | Una contraseña con espacios y Unicode funciona literalmente. | `test_password_validation_passes_spaces_and_unicode_to_qpdf_literally` y `test_password_probe_reopens_with_the_exact_accepted_password` crean un cifrado de prueba y lo reabren con el valor exacto. | Aprobado automatizado |
+| 7 | Una contraseña no representable o que no hace ida y vuelta se rechaza antes de procesar. | `test_password_qpdf_rejects_raises_compatibility_error`, `test_password_with_unpaired_surrogate_raises_compatibility_error` y la frontera reproducible 127/128 bytes de `test_password_probe_rejects_128_ascii_bytes_that_do_not_round_trip`. | Aprobado automatizado |
+| 8 | La contraseña no llega a registros, archivos auxiliares ni al historial de deshacer de la interfaz. | El smoke comprueba salida/reporte; las pruebas de errores comprueban mensajes sin secreto; `test_local_preflight_failure_erases_passwords_and_undo_history` y los casos de cancelación, fallo y éxito enfocan cada campo, pulsan Ctrl+Z y prueban que el secreto no reaparece. | Aprobado automatizado |
+| 9 | No persisten contenido activo, adjuntos ni metadatos; las apariencias se aplanan. | `test_sanitize_removes_active_content_and_flattens_visible_appearances` y, de forma adversaria, `test_sanitize_removes_payloads_from_nested_form_xobject_graph` reabre un PDF con Form XObject anidados y prueba que `/AF`, `/Filespec`, `/EmbeddedFile`, acciones/JS y `/Metadata` ya no son alcanzables, sin destruir el contenido visible. Las pruebas de XFA/apariencia no segura rechazan pérdidas silenciosas. | Aprobado automatizado |
+| 10 | Se advierte la invalidación de firmas sin bloquear la interfaz ni publicar antes de confirmar. | `test_inspect_detects_signature_fields_and_certification_signatures`, `test_signature_warning_is_confirmed_before_output_publication` y `test_ui_remains_responsive_and_can_cancel_during_worker_preflight` prueban el preflight en QThread y la confirmación previa. | Aprobado automatizado |
+| 11 | No se escribe una combinación sin cifrar en disco. | `test_publishes_only_a_verified_aes256_temporary_by_atomic_claim` abre el temporal, verifica AES-256 y solo después observa el renombre atómico; las pruebas de frontera prueban cancelación antes de publicar y éxito comprometido aunque la cancelación llegue después. | Aprobado automatizado |
+| 12 | Un origen dañado o protegido informa el error y no publica una salida parcial. | Las pruebas cubren origen cifrado incluso con usuario vacío/solo propietario, segundo origen, campos/estructuras malformados, ausencia tardía, categorías de publicación/verificación/disco lleno y memoria agotada con mensajes seguros. | Aprobado automatizado |
 | 13 | Cancelar la elección de destino no cambia archivos. | `test_cancelled_save_dialog_does_not_start_or_change_files`. | Aprobado automatizado |
 | 14 | Un error de escritura preserva un destino existente. | `test_failures_leave_no_new_destination_and_preserve_an_existing_one`. | Aprobado automatizado |
 | 15 | El ejecutable funciona sin Python ni red en una instalación limpia de Windows definida. | El smoke local empaquetado es evidencia parcial; faltan las dos ejecuciones manuales limpias detalladas abajo. | **Pendiente — bloquea la aceptación final de distribución** |
@@ -83,7 +83,7 @@ El único entregable es la carpeta `dist/ProtectorPDF`; debe distribuirse comple
 
 - **Tamaño y memoria:** no se ha ejecutado una medición de documentos grandes ni de memoria; no se declara máximo ni recomendación de tamaño.
 - **Lectores PDF:** no se ha completado una prueba manual con lectores PDF. La única comprobación técnica local usa pikepdf 10.18.2/qpdf 12.4.2; las restricciones de permisos siguen dependiendo del lector.
-- **Rutas de red o sincronizadas:** la prueba automatizada cubre una ruta UNC y una ruta con `OneDrive` como advertencias, y una ruta local como no advertida. No se ha medido una escritura real en un recurso de red o carpeta sincronizada.
+- **Rutas de red o sincronizadas:** la prueba automatizada cubre UNC normal y extendido, `OneDrive`, `OneDrive - Organización` y unidad de red mapeada como advertencias, además de una ruta local extendida como no advertida. La detección es orientativa; no se ha medido una escritura real en un recurso de red o carpeta sincronizada.
 - **SmartScreen:** el ejecutable no está firmado. No se ha observado aún el aviso en una máquina limpia; su comportamiento queda pendiente de la aceptación manual.
 
 ### Aceptación manual en Windows limpio
@@ -110,4 +110,6 @@ Lista reproducible para cada ambiente:
 
 ## Licencias
 
-Las dependencias redistribuidas y sus licencias se documentan en [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+Las dependencias redistribuidas y sus licencias se documentan en [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). La distribución incluye además `LICENSES/` con los textos disponibles de CPython, Qt/PySide, pikepdf/qpdf, Pillow, lxml, packaging, typing-extensions y PyInstaller, más la información para obtener las fuentes exactas de Qt/PySide 6.12.0.
+
+Permanece pendiente una revisión legal de los textos individuales de terceros incorporados por las DLL de Qt; el inventario identifica exactamente esta limitación y no afirma cumplimiento legal completo para distribución externa.

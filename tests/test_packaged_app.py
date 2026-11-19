@@ -58,6 +58,53 @@ def test_packaged_distribution_omits_unused_qt_and_unlicensed_xsl_payload() -> N
     assert unwanted_files == []
 
 
+def test_packaged_distribution_bundles_runtime_license_texts_and_source_info() -> None:
+    """Catches shipping links/inventory without the applicable license materials."""
+    if not PACKAGED_EXECUTABLE.is_file():
+        pytest.skip(
+            "Packaged executable is absent; run scripts/build.ps1 before this test."
+        )
+
+    license_directory = PACKAGED_EXECUTABLE.parent / "LICENSES"
+    required_files = {
+        "CPython-3.12.2-LICENSE.txt",
+        "GNU-GPL-3.0.txt",
+        "GNU-LGPL-3.0.txt",
+        "Pillow-13.0.0-LICENSE.txt",
+        "PyInstaller-6.22.3-COPYING.txt",
+        "Qt-PySide6-SOURCE-INFORMATION.txt",
+        "lxml-6.1.3-LICENSE.txt",
+        "lxml-6.1.3-THIRD-PARTY-LICENSES.txt",
+        "typing-extensions-4.16.0-LICENSE.txt",
+    }
+
+    assert license_directory.is_dir()
+    assert required_files <= {
+        path.name for path in license_directory.iterdir() if path.is_file()
+    }
+    assert (license_directory / "packaging-26.3" / "LICENSE.APACHE").is_file()
+    assert (license_directory / "packaging-26.3" / "LICENSE.BSD").is_file()
+    assert (license_directory / "pikepdf-10.18.2" / "LICENSE.txt").is_file()
+    assert (
+        license_directory
+        / "pikepdf-10.18.2"
+        / "third-party-licenses"
+        / "qpdf.txt"
+    ).is_file()
+    assert "GNU LESSER GENERAL PUBLIC LICENSE" in (
+        license_directory / "GNU-LGPL-3.0.txt"
+    ).read_text(encoding="utf-8")
+    assert "GNU GENERAL PUBLIC LICENSE" in (
+        license_directory / "GNU-GPL-3.0.txt"
+    ).read_text(encoding="utf-8")
+    source_information = (
+        license_directory / "Qt-PySide6-SOURCE-INFORMATION.txt"
+    ).read_text(encoding="utf-8")
+    assert "6.12.0" in source_information
+    assert "pyside-setup" in source_information
+    assert "Qt 6.12.0" in source_information
+
+
 def test_packaged_smoke_loads_qt_and_pikepdf_and_produces_aes256(
     tmp_path: Path,
 ) -> None:

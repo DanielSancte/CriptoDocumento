@@ -13,11 +13,14 @@ from pdf_protector import worker
 from pdf_protector.domain import (
     CancelledError,
     DestinationError,
+    DestinationErrorKind,
+    MemoryLimitError,
     PasswordCompatibilityError,
     PdfPermissions,
     ProcessingResult,
     ProtectionError,
     ProtectionRequest,
+    SourceInspection,
     SourcePdfError,
     ValidationError,
 )
@@ -36,6 +39,19 @@ def _request(tmp_path: Path) -> ProtectionRequest:
         destination=tmp_path / "protegido.pdf",
         user_password=PASSWORD,
         permissions=PdfPermissions(False, False, False),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _fast_unsigned_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep worker unit tests focused while exercising the real preflight contract."""
+    monkeypatch.setattr(
+        worker,
+        "inspect_source",
+        lambda path, is_cancelled=(lambda: False): SourceInspection(
+            path=path, pages=1, has_signatures=False
+        ),
+        raising=False,
     )
 
 
@@ -260,3 +276,202 @@ def test_worker_marks_success_finished_before_signal_allows_reentrant_run(
 
     assert calls == 1
     assert results == [result]
+
+
+def test_worker_reports_success_when_cancellation_arrives_after_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Catches a late cancellation relabeling an already committed result."""
+    request = _request(tmp_path)
+    result = ProcessingResult(destination=request.destination, pages=1)
+    processor = worker.ProtectionWorker(request)
+    terminals: list[str] = []
+
+    def commit_then_cancel(*_args: object, **_kwargs: object) -> ProcessingResult:
+        processor.cancel()
+        return result
+
+    monkeypatch.setattr(worker, "protect_to_destination", commit_then_cancel)
+    processor.succeeded.connect(lambda _result: terminals.append("succeeded"))
+    processor.cancelled.connect(lambda: terminals.append("cancelled"))
+    processor.failed.connect(lambda _message: terminals.append("failed"))
+
+    processor.run()
+
+    assert terminals == ["succeeded"]
+
+
+def test_worker_uses_the_structured_second_source_path_in_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Catches source diagnostics always naming the first selected PDF."""
+    first = tmp_path / "primero.pdf"
+    second = tmp_path / "segundo.pdf"
+    request = ProtectionRequest(
+        sources=(first, second),
+        destination=tmp_path / "protegido.pdf",
+        user_password=PASSWORD,
+        permissions=PdfPermissions(False, False, False),
+    )
+    messages: list[str] = []
+
+    def fail_on_second(*_args: object, **_kwargs: object) -> ProcessingResult:
+        raise SourcePdfError("internal source detail", path=second)
+
+    monkeypatch.setattr(worker, "protect_to_destination", fail_on_second)
+    processor = worker.ProtectionWorker(request)
+    processor.failed.connect(messages.append)
+
+    processor.run()
+
+    assert len(messages) == 1
+    assert second.name in messages[0]
+    assert first.name not in messages[0]
+    assert "internal source detail" not in messages[0]
+    assert PASSWORD not in messages[0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_text"),
+    [
+        (DestinationErrorKind.DISK_FULL, "espacio"),
+        (DestinationErrorKind.UNWRITABLE, "escribir"),
+        (DestinationErrorKind.VERIFICATION, "verificar"),
+        (DestinationErrorKind.PUBLICATION, "publicar"),
+    ],
+)
+def test_worker_preserves_actionable_destination_categories_without_details(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: DestinationErrorKind,
+    expected_text: str,
+) -> None:
+    """Catches every destination failure collapsing into one generic message."""
+    messages: list[str] = []
+
+    def fail(*_args: object, **_kwargs: object) -> ProcessingResult:
+        raise DestinationError("internal destination detail", kind=kind)
+
+    monkeypatch.setattr(worker, "protect_to_destination", fail)
+    processor = worker.ProtectionWorker(_request(tmp_path))
+    processor.failed.connect(messages.append)
+
+    processor.run()
+
+    assert len(messages) == 1
+    assert expected_text in messages[0].casefold()
+    assert "internal destination detail" not in messages[0]
+    assert PASSWORD not in messages[0]
+
+
+def test_worker_translates_raw_memory_exhaustion_to_safe_spanish_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Catches memory exhaustion exposing exception details or a traceback."""
+    secret = f"allocation detail {PASSWORD}"
+    messages: list[str] = []
+
+    def exhaust_memory(*_args: object, **_kwargs: object) -> SourceInspection:
+        raise MemoryError(secret)
+
+    monkeypatch.setattr(worker, "inspect_source", exhaust_memory)
+    processor = worker.ProtectionWorker(_request(tmp_path))
+    processor.failed.connect(messages.append)
+
+    processor.run()
+
+    assert len(messages) == 1
+    assert "memoria" in messages[0].casefold()
+    assert secret not in messages[0]
+    assert PASSWORD not in messages[0]
+
+
+def test_worker_surfaces_cleanup_warning_without_replacing_primary_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Catches cleanup warnings being dropped or replacing the main error."""
+    warnings: list[str] = []
+    failures: list[str] = []
+    safe_warning = "No se pudo eliminar un archivo temporal de forma automática."
+
+    def fail_with_warning(*_args: object, **kwargs: object) -> ProcessingResult:
+        on_warning = kwargs["on_warning"]
+        assert callable(on_warning)
+        on_warning(safe_warning)
+        raise DestinationError(
+            "internal publish detail", kind=DestinationErrorKind.PUBLICATION
+        )
+
+    monkeypatch.setattr(worker, "protect_to_destination", fail_with_warning)
+    processor = worker.ProtectionWorker(_request(tmp_path))
+    processor.warning.connect(warnings.append)
+    processor.failed.connect(failures.append)
+
+    processor.run()
+
+    assert warnings == [safe_warning]
+    assert len(failures) == 1
+    assert "publicar" in failures[0].casefold()
+
+
+def test_worker_requires_signature_consent_before_output_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Catches processing signed input before the user confirms invalidation."""
+    request = _request(tmp_path)
+    result = ProcessingResult(destination=request.destination, pages=1)
+    events: list[str] = []
+
+    def signed_inspection(path: Path, **_kwargs: object) -> SourceInspection:
+        events.append("inspect")
+        return SourceInspection(path=path, pages=1, has_signatures=True)
+
+    def protect(*_args: object, **_kwargs: object) -> ProcessingResult:
+        events.append("protect")
+        return result
+
+    monkeypatch.setattr(worker, "inspect_source", signed_inspection)
+    monkeypatch.setattr(worker, "protect_to_destination", protect)
+    processor = worker.ProtectionWorker(request)
+
+    def confirm(names: tuple[str, ...]) -> None:
+        events.append("confirm")
+        assert names == (request.sources[0].name,)
+        processor.resolve_signature_confirmation(True)
+
+    processor.signature_confirmation_required.connect(confirm)
+
+    processor.run()
+
+    assert events == ["inspect", "confirm", "protect"]
+
+
+def test_worker_signature_decline_cancels_before_output_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Catches declining the signature warning while processing still starts."""
+    request = _request(tmp_path)
+    terminals: list[str] = []
+    monkeypatch.setattr(
+        worker,
+        "inspect_source",
+        lambda path, **_kwargs: SourceInspection(
+            path=path, pages=1, has_signatures=True
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "protect_to_destination",
+        lambda *_args, **_kwargs: pytest.fail(
+            "output service must not run after signature consent is declined"
+        ),
+    )
+    processor = worker.ProtectionWorker(request)
+    processor.signature_confirmation_required.connect(
+        lambda _names: processor.resolve_signature_confirmation(False)
+    )
+    processor.cancelled.connect(lambda: terminals.append("cancelled"))
+
+    processor.run()
+
+    assert terminals == ["cancelled"]
