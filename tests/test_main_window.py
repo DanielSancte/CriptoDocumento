@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 import threading
 import time
 
 import pytest
 from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
-from PySide6.QtWidgets import QLineEdit
+from PySide6.QtWidgets import QApplication, QLineEdit
 
-from pdf_protector import main_window
-from pdf_protector.domain import ProcessingResult, SourceInspection
+from pdf_protector import main_window, output_service
+from pdf_protector.domain import CancelledError, ProcessingResult, SourceInspection
 from pdf_protector.main_window import MainWindow
 
 
@@ -210,6 +209,38 @@ def test_form_defaults_labels_accessibility_and_keyboard_focus(qtbot) -> None:
         assert control.focusPolicy() & Qt.FocusPolicy.TabFocus
 
 
+def test_tab_navigation_follows_the_visible_workflow(qtbot, tmp_path: Path) -> None:
+    """Catches a declared tab order that does not work in the real focus chain."""
+    sources = tuple(tmp_path / name for name in ("uno.pdf", "dos.pdf", "tres.pdf"))
+    for source in sources:
+        source.write_bytes(b"fixture")
+    window = _make_window(qtbot)
+    window.add_sources(sources)
+    window.files_view.setCurrentIndex(window.files_model.index(1, 0))
+    window.password_edit.setText(PASSWORD)
+    window.confirmation_edit.setText(PASSWORD)
+    window.activateWindow()
+    window.add_button.setFocus(Qt.FocusReason.OtherFocusReason)
+    qtbot.waitUntil(window.add_button.hasFocus, timeout=1_000)
+
+    expected_focus_order = (
+        window.files_view,
+        window.move_up_button,
+        window.move_down_button,
+        window.remove_button,
+        window.password_edit,
+        window.confirmation_edit,
+        window.show_password_button,
+        window.printing_checkbox,
+        window.copying_checkbox,
+        window.editing_checkbox,
+        window.create_button,
+    )
+    for expected in expected_focus_order:
+        qtbot.keyClick(QApplication.focusWidget(), Qt.Key.Key_Tab)
+        assert QApplication.focusWidget() is expected
+
+
 def test_passwords_are_hidden_toggle_together_and_gate_submission(
     qtbot, tmp_path: Path
 ) -> None:
@@ -297,7 +328,7 @@ def test_signature_warning_is_confirmed_before_destination_selection(
     assert window._thread is None
 
 
-def test_route_warning_then_overwrite_confirmation_precede_worker(
+def test_route_warning_then_overwrite_confirmation_precede_worker_construction(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
     minimal_pdf_factory,
@@ -311,14 +342,62 @@ def test_route_warning_then_overwrite_confirmation_precede_worker(
     destination.write_bytes(b"existing")
     window = _make_window(qtbot)
     _fill_valid_form(window, source)
-    window.printing_checkbox.setChecked(True)
     monkeypatch.setattr(window, "_choose_destination", lambda: destination)
-    confirmations: list[str] = []
-    monkeypatch.setattr(
-        window,
-        "_confirm",
-        lambda _title, text: confirmations.append(text) or True,
-    )
+    events: list[str] = []
+
+    def confirm(_title: str, text: str) -> bool:
+        if "sincronizada" in text:
+            events.append("route-warning")
+        elif "ya existe" in text:
+            events.append("overwrite-confirmation")
+        else:
+            pytest.fail(f"unexpected confirmation: {text}")
+        return True
+
+    monkeypatch.setattr(window, "_confirm", confirm)
+    monkeypatch.setattr(window, "_ask_open_folder", lambda _result: False)
+    Worker = _worker_type("success")
+
+    def construct_worker(*args, **kwargs):
+        events.append("worker-construction")
+        return Worker(*args, **kwargs)
+
+    monkeypatch.setattr(main_window, "ProtectionWorker", construct_worker)
+
+    qtbot.mouseClick(window.create_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: window._thread is None, timeout=1_000)
+
+    assert events == [
+        "route-warning",
+        "overwrite-confirmation",
+        "worker-construction",
+    ]
+    assert len(Worker.instances) == 1
+    processor = Worker.instances[0]
+    assert processor.overwrite_confirmed is True
+    assert processor.request.sources == (source.resolve(),)
+    assert processor.request.destination == destination
+
+
+def test_worker_request_preserves_literal_password_and_all_permission_choices(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    minimal_pdf_factory,
+    tmp_path: Path,
+) -> None:
+    """Catches transforming the password or misrouting any permission choice."""
+    source = minimal_pdf_factory("entrada.pdf")
+    destination = tmp_path / "salida.pdf"
+    literal_password = "  Clave Ñandú 🔐 con espacios  "
+    window = _make_window(qtbot)
+    window.add_sources([source])
+    window.password_edit.setText(literal_password)
+    window.confirmation_edit.setText(literal_password)
+    window.printing_checkbox.setChecked(True)
+    window.copying_checkbox.setChecked(False)
+    window.editing_checkbox.setChecked(True)
+    monkeypatch.setattr(window, "_choose_destination", lambda: destination)
+    monkeypatch.setattr(main_window, "is_remote_or_synced", lambda _path: False)
     monkeypatch.setattr(window, "_ask_open_folder", lambda _result: False)
     Worker = _worker_type("success")
     monkeypatch.setattr(main_window, "ProtectionWorker", Worker)
@@ -326,24 +405,46 @@ def test_route_warning_then_overwrite_confirmation_precede_worker(
     qtbot.mouseClick(window.create_button, Qt.MouseButton.LeftButton)
     qtbot.waitUntil(lambda: window._thread is None, timeout=1_000)
 
-    assert "sincron" in confirmations[0].casefold()
-    assert "existe" in confirmations[1].casefold()
     assert len(Worker.instances) == 1
-    processor = Worker.instances[0]
-    assert processor.overwrite_confirmed is True
-    assert processor.request.sources == (source.resolve(),)
-    assert processor.request.destination == destination
-    assert processor.request.permissions.printing is True
+    request = Worker.instances[0].request
+    assert request.user_password == "  Clave Ñandú 🔐 con espacios  "
+    assert request.permissions.printing is True
+    assert request.permissions.copying is False
+    assert request.permissions.editing is True
 
 
-def test_destination_default_name_is_documentos_protegidos(qtbot) -> None:
-    """Catches presenting an unrelated or extensionless default output name."""
+def test_save_dialog_receives_documentos_protegidos_as_default_name(
+    qtbot, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Catches computing the default name without passing it to the save dialog."""
     window = _make_window(qtbot)
+    chosen = tmp_path / "resultado.pdf"
+    captured_directories: list[str] = []
+    real_options = main_window.QFileDialog.Option
 
-    default = window.default_destination()
+    class FileDialogDouble:
+        Option = real_options
 
-    assert default.name == "documentos_protegidos.pdf"
-    assert default.is_absolute()
+        @staticmethod
+        def getSaveFileName(
+            _parent,
+            _title: str,
+            directory: str,
+            _filter: str,
+            *,
+            options,
+        ) -> tuple[str, str]:
+            captured_directories.append(directory)
+            assert options == real_options.DontConfirmOverwrite
+            return str(chosen), "Archivos PDF (*.pdf)"
+
+    monkeypatch.setattr(main_window, "QFileDialog", FileDialogDouble)
+
+    assert window._choose_destination() == chosen.resolve()
+    assert len(captured_directories) == 1
+    proposed = Path(captured_directories[0])
+    assert proposed.name == "documentos_protegidos.pdf"
+    assert proposed.is_absolute()
 
 
 def test_destination_cannot_replace_a_selected_original(
@@ -475,29 +576,54 @@ def test_worker_error_is_reported_and_clears_passwords(
     assert window._worker is None
 
 
-def test_close_during_job_cancels_and_waits_for_thread_without_partial_output(
+def test_close_during_real_output_job_removes_temporary_and_partial_destination(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
     minimal_pdf_factory,
     tmp_path: Path,
 ) -> None:
-    """Catches destroying a live QThread or leaving an apparent partial output."""
+    """Catches closing over a live real worker without cleaning its partial file."""
     source = minimal_pdf_factory("entrada.pdf")
     destination = tmp_path / "resultado.pdf"
     window = _make_window(qtbot)
     _fill_valid_form(window, source)
     monkeypatch.setattr(window, "_choose_destination", lambda: destination)
     monkeypatch.setattr(main_window, "is_remote_or_synced", lambda _path: False)
-    Worker = _worker_type("cancelled", blocking=True)
-    monkeypatch.setattr(main_window, "ProtectionWorker", Worker)
+    temporary_created = threading.Event()
+    temporary_paths: list[Path] = []
+
+    def build_until_cancelled(
+        _request,
+        sink,
+        is_cancelled=lambda: False,
+        on_progress=None,
+    ) -> int:
+        temporary = Path(sink.name)
+        sink.write(b"partial encrypted output")
+        sink.flush()
+        temporary_paths.append(temporary)
+        temporary_created.set()
+        if on_progress is not None:
+            on_progress(1, 2)
+        while not is_cancelled():
+            time.sleep(0.001)
+        raise CancelledError("controlled cancellation")
+
+    monkeypatch.setattr(output_service, "build_encrypted_pdf", build_until_cancelled)
 
     qtbot.mouseClick(window.create_button, Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(Worker.started.is_set, timeout=1_000)
-    window.close()
-    qtbot.waitUntil(lambda: window._thread is None, timeout=1_000)
-    qtbot.waitUntil(lambda: not window.isVisible(), timeout=1_000)
+    qtbot.waitUntil(temporary_created.is_set, timeout=2_000)
+    assert len(temporary_paths) == 1
+    temporary = temporary_paths[0]
+    assert temporary.exists()
+    assert temporary.read_bytes() == b"partial encrypted output"
 
-    assert Worker.instances[0].cancel_native_thread is not None
+    window.close()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=2_000)
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=2_000)
+
     assert window.password_edit.text() == ""
     assert window.confirmation_edit.text() == ""
     assert not destination.exists()
+    assert not temporary.exists()
+    assert list(tmp_path.glob(".pdf-protector-*.pdf")) == []
