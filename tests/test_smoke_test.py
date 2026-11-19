@@ -28,6 +28,8 @@ def test_smoke_mode_loads_dependencies_and_creates_verified_aes256_pdf(
     assert output.is_file()
     assert report["status"] == "ok"
     assert report["qt_version"]
+    assert report["qt_application"] == "QApplication"
+    assert report["qt_platform"] == "windows"
     assert report["pikepdf_version"] == pikepdf.__version__
     assert report["pages"] == 1
     assert report["encryption"] == {"bits": 256, "revision": 6}

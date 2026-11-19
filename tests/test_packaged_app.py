@@ -51,6 +51,8 @@ def test_packaged_smoke_loads_qt_and_pikepdf_and_produces_aes256(
     report = json.loads(report_text)
     assert report["status"] == "ok"
     assert report["qt_version"]
+    assert report["qt_application"] == "QApplication"
+    assert report["qt_platform"] == "windows"
     assert report["pikepdf_version"]
     assert report["pages"] == 1
     assert report["encryption"] == {"bits": 256, "revision": 6}

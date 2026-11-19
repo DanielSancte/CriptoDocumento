@@ -22,9 +22,26 @@ def run_smoke_test(directory: Path) -> None:
     import pikepdf
     from pikepdf.models.encryption import EncryptionMethod
     from PySide6.QtCore import qVersion
+    from PySide6.QtWidgets import QApplication, QWidget
 
     from pdf_protector.domain import PdfPermissions, ProtectionRequest
     from pdf_protector.output_service import protect_to_destination
+
+    application = QApplication.instance()
+    if application is None:
+        application = QApplication(
+            ["ProtectorPDF smoke test", "-platform", "windows"]
+        )
+    if not isinstance(application, QApplication):
+        raise RuntimeError("QtWidgets QApplication is unavailable")
+
+    widget_probe = QWidget()
+    widget_probe.ensurePolished()
+    application.processEvents()
+    qt_platform = application.platformName()
+    widget_probe.close()
+    if qt_platform.casefold() != "windows":
+        raise RuntimeError("Qt Windows platform plugin smoke verification failed")
 
     directory.mkdir(parents=True, exist_ok=True)
     source = directory / SMOKE_SOURCE_NAME
@@ -59,6 +76,8 @@ def run_smoke_test(directory: Path) -> None:
     report = {
         "status": "ok",
         "qt_version": qVersion(),
+        "qt_application": type(application).__name__,
+        "qt_platform": qt_platform,
         "pikepdf_version": pikepdf.__version__,
         "pages": result.pages,
         "encryption": {"bits": 256, "revision": 6},
