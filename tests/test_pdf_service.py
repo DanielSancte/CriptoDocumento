@@ -12,6 +12,7 @@ import pikepdf
 import pytest
 from pikepdf.models.encryption import EncryptionMethod
 
+from pdf_protector import pdf_service
 from pdf_protector.domain import (
     CancelledError,
     PdfPermissions,
@@ -191,6 +192,22 @@ def test_sanitize_reports_a_technical_limitation_instead_of_dropping_appearance(
     assert sink.getvalue() == b""
 
 
+def test_sanitize_rejects_xfa_instead_of_discarding_its_visible_presentation(
+    xfa_pdf_factory,
+    tmp_path: Path,
+) -> None:
+    """Catches XFA presentation being discarded without a proven static rendering."""
+    source = xfa_pdf_factory("visible-xfa-input.pdf")
+    with pikepdf.open(source) as xfa_source:
+        assert "/XFA" in xfa_source.Root.AcroForm
+    sink = BytesIO()
+
+    with pytest.raises(SourcePdfError, match=r"XFA.*visible\-xfa\-input\.pdf"):
+        build_encrypted_pdf(_request((source,), tmp_path / "unused.pdf"), sink)
+
+    assert sink.getvalue() == b""
+
+
 def test_cancel_between_sources_raises_without_writing_the_sink(
     minimal_pdf_factory,
     tmp_path: Path,
@@ -233,9 +250,41 @@ def test_encrypt_requires_the_user_password_and_uses_aes256_revision_6(
     with pikepdf.open(BytesIO(encrypted_bytes), password=USER_PASSWORD) as encrypted:
         assert encrypted.encryption.bits == 256
         assert encrypted.encryption.R == 6
+        assert encrypted.trailer.Encrypt.get("/EncryptMetadata", True) is True
         assert encrypted.encryption.file_method is EncryptionMethod.aesv3
         assert encrypted.encryption.stream_method is EncryptionMethod.aesv3
         assert encrypted.encryption.string_method is EncryptionMethod.aesv3
+
+
+def test_encrypt_generates_a_fresh_owner_password_for_each_output(
+    minimal_pdf_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Catches reusing one administrative password across protected documents."""
+    source = minimal_pdf_factory()
+    known_owners = iter(("known-owner-one", "known-owner-two"))
+    monkeypatch.setattr(
+        pdf_service, "generate_owner_password", lambda: next(known_owners)
+    )
+    first_sink = BytesIO()
+    second_sink = BytesIO()
+
+    build_encrypted_pdf(_request((source,), tmp_path / "first.pdf"), first_sink)
+    build_encrypted_pdf(_request((source,), tmp_path / "second.pdf"), second_sink)
+
+    with pikepdf.open(
+        BytesIO(first_sink.getvalue()), password="known-owner-one"
+    ) as first:
+        assert first.owner_password_matched is True
+    with pytest.raises(pikepdf.PasswordError):
+        pikepdf.open(BytesIO(first_sink.getvalue()), password="known-owner-two")
+    with pikepdf.open(
+        BytesIO(second_sink.getvalue()), password="known-owner-two"
+    ) as second:
+        assert second.owner_password_matched is True
+    with pytest.raises(pikepdf.PasswordError):
+        pikepdf.open(BytesIO(second_sink.getvalue()), password="known-owner-one")
 
 
 @pytest.mark.parametrize(

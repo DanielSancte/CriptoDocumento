@@ -126,6 +126,12 @@ def _flatten_visible_annotations(document: pikepdf.Pdf, path: Path) -> None:
 
 
 def _sanitize_source(document: pikepdf.Pdf, path: Path) -> None:
+    acroform = document.Root.get("/AcroForm")
+    if acroform is not None and "/XFA" in acroform:
+        raise SourcePdfError(
+            "No se puede preservar de forma segura el formulario XFA de "
+            f"'{path.name}'."
+        )
     _flatten_visible_annotations(document, path)
     _remove_inherited_page_metadata(document.Root.Pages)
     for page in document.pages:

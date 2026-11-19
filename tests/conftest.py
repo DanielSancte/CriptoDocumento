@@ -152,6 +152,34 @@ def unflattenable_pdf_factory(tmp_path: Path) -> PdfFactory:
 
 
 @pytest.fixture
+def xfa_pdf_factory(tmp_path: Path) -> PdfFactory:
+    def create(name: str = "xfa-form.pdf") -> Path:
+        path = tmp_path / name
+        with pikepdf.Pdf.new() as document:
+            _add_text_page(document, "XFA-FORM")
+            xfa = document.make_stream(
+                b"""<?xml version='1.0'?>
+<xdp:xdp xmlns:xdp='http://ns.adobe.com/xdp/'>
+  <template xmlns='http://www.xfa.org/schema/xfa-template/3.3/'>
+    <subform name='form'><field name='visible-value'/></subform>
+  </template>
+  <datasets xmlns='http://www.xfa.org/schema/xfa-data/1.0/'>
+    <xfa:data xmlns:xfa='http://www.xfa.org/schema/xfa-data/1.0/'>
+      <visible-value>Rendered by XFA</visible-value>
+    </xfa:data>
+  </datasets>
+</xdp:xdp>"""
+            )
+            document.Root.AcroForm = pikepdf.Dictionary(
+                Fields=pikepdf.Array(), XFA=xfa
+            )
+            document.save(path)
+        return path
+
+    return create
+
+
+@pytest.fixture
 def active_pdf_factory(tmp_path: Path) -> PdfFactory:
     """Create one PDF containing every active/inherited structure we remove."""
 
