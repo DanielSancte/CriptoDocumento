@@ -9,6 +9,37 @@ from PyInstaller.utils.hooks import collect_all
 
 project_root = Path(SPECPATH).resolve().parent
 source_root = project_root / "src"
+unwanted_packaged_path_tokens = (
+    "/qt6virtualkeyboard",
+    "/qtvirtualkeyboard",
+    "/qt6pdf",
+    "/qtpdf",
+    "/qpdf.dll",
+    "/pdfium",
+    "/qt6webengine",
+    "/qtwebengine",
+    "/chromium",
+    "/opengl32sw.dll",
+    "/mesa",
+    "/qt6qml",
+    "/qt6quick",
+    "/qt6opengl",
+    "/qml/",
+    "/rng2schtrn.xsl",
+    "/xsd2schtrn.xsl",
+)
+
+
+def without_unused_payload(entries):
+    """Keep optional stacks that the QWidget application uses out of the bundle."""
+    return [
+        entry
+        for entry in entries
+        if not any(
+            token in ("/" + entry[0].replace("\\", "/").casefold())
+            for token in unwanted_packaged_path_tokens
+        )
+    ]
 
 pikepdf_datas, pikepdf_binaries, pikepdf_hiddenimports = collect_all(
     "pikepdf",
@@ -48,6 +79,11 @@ analysis = Analysis(
         "pip",
         "PySide6.QtPdf",
         "PySide6.QtPdfWidgets",
+        "PySide6.QtOpenGL",
+        "PySide6.QtOpenGLWidgets",
+        "PySide6.QtQml",
+        "PySide6.QtQuick",
+        "PySide6.QtVirtualKeyboard",
         "PySide6.QtWebEngineCore",
         "PySide6.QtWebEngineQuick",
         "PySide6.QtWebEngineWidgets",
@@ -55,6 +91,9 @@ analysis = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+analysis.binaries = without_unused_payload(analysis.binaries)
+analysis.datas = without_unused_payload(analysis.datas)
 
 python_archive = PYZ(analysis.pure)
 

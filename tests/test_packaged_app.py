@@ -16,6 +16,46 @@ SMOKE_PASSWORD = "ProtectorPDF-Smoke-Password-Never-Log"
 SMOKE_DIRECTORY_ENV = "PDF_PROTECTOR_SMOKE_DIR"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGED_EXECUTABLE = PROJECT_ROOT / "dist" / "ProtectorPDF" / "ProtectorPDF.exe"
+UNWANTED_PACKAGED_PATH_TOKENS = (
+    "/qt6virtualkeyboard",
+    "/qtvirtualkeyboard",
+    "/qt6pdf",
+    "/qtpdf",
+    "/qpdf.dll",
+    "/pdfium",
+    "/qt6webengine",
+    "/qtwebengine",
+    "/chromium",
+    "/opengl32sw.dll",
+    "/mesa",
+    "/qt6qml",
+    "/qt6quick",
+    "/qt6opengl",
+    "/qml/",
+    "/rng2schtrn.xsl",
+    "/xsd2schtrn.xsl",
+)
+
+
+def test_packaged_distribution_omits_unused_qt_and_unlicensed_xsl_payload() -> None:
+    """Prevents unused Qt stacks and unlicensed lxml XSL files returning."""
+    if not PACKAGED_EXECUTABLE.is_file():
+        pytest.skip(
+            "Packaged executable is absent; run scripts/build.ps1 before this test."
+        )
+
+    shipped_files = (
+        "/" + path.relative_to(PACKAGED_EXECUTABLE.parent).as_posix().casefold()
+        for path in PACKAGED_EXECUTABLE.parent.rglob("*")
+        if path.is_file()
+    )
+    unwanted_files = sorted(
+        path
+        for path in shipped_files
+        if any(token in path for token in UNWANTED_PACKAGED_PATH_TOKENS)
+    )
+
+    assert unwanted_files == []
 
 
 def test_packaged_smoke_loads_qt_and_pikepdf_and_produces_aes256(
