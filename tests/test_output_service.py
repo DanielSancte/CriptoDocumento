@@ -156,7 +156,7 @@ def test_missing_source_after_validation_never_publishes_a_destination(
     assert _temporary_outputs(tmp_path) == []
 
 
-def test_publishes_only_a_verified_aes256_temporary_by_final_replace(
+def test_publishes_only_a_verified_aes256_temporary_by_atomic_claim(
     minimal_pdf_factory,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -166,8 +166,8 @@ def test_publishes_only_a_verified_aes256_temporary_by_final_replace(
     destination = tmp_path / "protected.pdf"
     source_digest = _digest(source)
     observed_temporaries: list[Path] = []
-    replacements: list[tuple[Path, Path]] = []
-    original_replace = output_service.os.replace
+    renames: list[tuple[Path, Path]] = []
+    original_rename = output_service.os.rename
 
     def inspect_real_temporary(*args: object, **kwargs: object) -> int:
         sink = args[1]
@@ -185,23 +185,51 @@ def test_publishes_only_a_verified_aes256_temporary_by_final_replace(
             assert encrypted.encryption.string_method is EncryptionMethod.aesv3
         return pages
 
-    def record_replace(source_path: Path, destination_path: Path) -> None:
-        replacements.append((Path(source_path), Path(destination_path)))
-        original_replace(source_path, destination_path)
+    def record_rename(source_path: Path, destination_path: Path) -> None:
+        renames.append((Path(source_path), Path(destination_path)))
+        original_rename(source_path, destination_path)
 
     monkeypatch.setattr(output_service, "build_encrypted_pdf", inspect_real_temporary)
-    monkeypatch.setattr(output_service.os, "replace", record_replace)
+    monkeypatch.setattr(output_service.os, "rename", record_rename)
 
     result = output_service.protect_to_destination(_request(source, destination))
 
     assert result.destination == destination
     assert result.pages == 1
     assert _digest(source) == source_digest
-    assert replacements == [(observed_temporaries[0], destination)]
+    assert renames == [(observed_temporaries[0], destination)]
     assert not observed_temporaries[0].exists()
     assert _temporary_outputs(tmp_path) == []
     with pikepdf.open(destination, password=USER_PASSWORD) as encrypted:
         assert len(encrypted.pages) == 1
+
+
+def test_concurrent_destination_creation_is_not_overwritten_without_confirmation(
+    minimal_pdf_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Catches a destination created after validation being overwritten at publish."""
+    source = minimal_pdf_factory("source.pdf")
+    destination = tmp_path / "protected.pdf"
+    source_digest = _digest(source)
+    concurrent_bytes = b"created by another process"
+
+    def build_then_create_destination(*args: object, **kwargs: object) -> int:
+        pages = build_encrypted_pdf(*args, **kwargs)
+        destination.write_bytes(concurrent_bytes)
+        return pages
+
+    monkeypatch.setattr(
+        output_service, "build_encrypted_pdf", build_then_create_destination
+    )
+
+    with pytest.raises(DestinationError, match="ya existe"):
+        output_service.protect_to_destination(_request(source, destination))
+
+    assert _digest(source) == source_digest
+    assert destination.read_bytes() == concurrent_bytes
+    assert _temporary_outputs(tmp_path) == []
 
 
 @pytest.mark.parametrize("failure", ["save", "verify", "cancel"])

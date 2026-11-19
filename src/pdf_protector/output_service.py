@@ -100,6 +100,26 @@ def _create_temporary(destination_directory: Path) -> BinaryIO:
     )
 
 
+def _publish_temporary(
+    temporary: Path, destination: Path, overwrite_confirmed: bool
+) -> None:
+    """Atomically publish an already-verified temporary on Windows.
+
+    ``os.rename`` maps to a non-replacing Windows move and therefore claims a
+    previously absent destination without a time-of-check/time-of-use gap.
+    ``os.replace`` is reserved for a replacement that the caller confirmed.
+    """
+    if overwrite_confirmed:
+        os.replace(temporary, destination)
+        return
+    try:
+        os.rename(temporary, destination)
+    except FileExistsError as error:
+        raise DestinationError(
+            "El archivo de destino ya existe y no fue confirmado."
+        ) from error
+
+
 def protect_to_destination(
     request: ProtectionRequest,
     *,
@@ -133,7 +153,7 @@ def protect_to_destination(
         _raise_if_cancelled(is_cancelled)
         _verify_encrypted_output(temporary, request.user_password, pages)
         _raise_if_cancelled(is_cancelled)
-        os.replace(temporary, request.destination)
+        _publish_temporary(temporary, request.destination, overwrite_confirmed)
         return ProcessingResult(destination=request.destination, pages=pages)
     except OSError as error:
         raise DestinationError(
