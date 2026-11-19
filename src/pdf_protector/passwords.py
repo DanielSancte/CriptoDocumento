@@ -37,7 +37,7 @@ def validate_pdf_password(password: str) -> None:
                     metadata=True,
                 ),
             )
-    except (pikepdf.PdfError, ValueError) as error:
+    except (pikepdf.PdfError, RuntimeError, ValueError) as error:
         raise PasswordCompatibilityError(
             "La contraseña no es compatible con el cifrado PDF AES-256."
         ) from error

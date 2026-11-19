@@ -69,3 +69,9 @@ def test_password_qpdf_rejects_raises_compatibility_error() -> None:
     """Catches silently changing a password qpdf cannot encode in an AES-256 PDF."""
     with pytest.raises(PasswordCompatibilityError):
         passwords.validate_pdf_password("before\x00after")
+
+
+def test_password_with_unpaired_surrogate_raises_compatibility_error() -> None:
+    """Catches qpdf runtime failures leaking past the compatibility boundary."""
+    with pytest.raises(PasswordCompatibilityError):
+        passwords.validate_pdf_password(chr(0xD800))
