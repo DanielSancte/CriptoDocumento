@@ -19,6 +19,7 @@ en `_internal/pikepdf-10.18.2.dist-info/licenses/`.
 | CPython y biblioteca estándar | 3.12.2 x64 | Python Software Foundation License Version 2 (PSF-2.0), con los avisos de terceros de CPython | [Historia y licencia de Python 3.12](https://docs.python.org/3.12/license.html) |
 | PySide6 / Qt for Python y PySide6-Essentials | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | [Licencias de Qt for Python](https://doc.qt.io/qtforpython-6/licenses.html) |
 | shiboken6 | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | [Shiboken](https://doc.qt.io/qtforpython-6/shiboken6/) |
+| Código `bufferprocs_py37.cpp`/`.h` de Python incorporado por libshiboken | 3.7.0 | PSF License Agreement for Python 3.7.0 | [Inventario oficial de licencias de Qt for Python](https://doc.qt.io/qtforpython-6/licenses.html) |
 | pikepdf | 10.18.2 | MPL-2.0 | Aviso incluido `pikepdf-10.18.2.dist-info/licenses/LICENSE.txt` y [fuente de pikepdf](https://github.com/pikepdf/pikepdf) |
 | Pillow | 13.0.0 | MIT-CMU | [LICENSE de Pillow 13.0.0](https://github.com/python-pillow/Pillow/blob/13.0.0/LICENSE) |
 | lxml | 6.1.3 | BSD-3-Clause, más las bibliotecas y recursos detallados abajo | [Licencias de lxml 6.1.3](https://github.com/lxml/lxml/tree/lxml-6.1.3/doc/licenses) |
@@ -60,7 +61,7 @@ asigna una expresión SPDX inventada.
 | Qt Core — SHA-384/SHA-512 | Incluida; versión no declarada por separado | BSD-3-Clause |
 | Qt Core — SipHash | Incluida; versión no declarada por separado | CC0-1.0 |
 | Qt Core — TinyCBOR | 7.0 | MIT |
-| Qt Core — Unicode Character Database | Incluida; versión no declarada por el binario | Unicode Data Files and Software License (2016) |
+| Qt Core — Unicode Character Database | 36 | Unicode Data Files and Software License (2016) |
 | Qt Core — Unicode CLDR | v48.2 | Unicode License v3 |
 | Qt Core — `tl::expected` | `41d3e1f48d682992a2230b2a715bca38b848b269` | CC0-1.0 |
 | Qt GUI — Adobe Glyph List For New Fonts | 1.7 | BSD-3-Clause |
@@ -73,7 +74,7 @@ asigna una expresión SPDX inventada.
 | Qt GUI — HarfBuzz-NG | 14.5.0 | MIT (variante histórica publicada por Qt) |
 | Qt GUI / plugin `qjpeg` — libjpeg-turbo | 3.2.0 | IJG License AND BSD-3-Clause, según la atribución del binario Qt |
 | Qt GUI — libpng | 1.6.58 | Libpng License AND PNG Reference Library License 2.0 |
-| Qt GUI — MD4C | Incluida; el binario no declara una versión independiente | MIT |
+| Qt GUI — MD4C | 0.5.3 | MIT |
 | Qt GUI — cabeceras OpenGL ES 2 | Revision 27673 | MIT |
 | Qt GUI — cabeceras OpenGL | Revision 27684 | MIT |
 | Qt GUI — Pixman | 0.17.12 | MIT |
@@ -130,15 +131,17 @@ PyInstaller incluye `_imaging`, `_imagingcms`, `_webp`, `_avif` e
 `_imagingtk`. Las versiones se comprobaron con `PIL.features` y con los
 encabezados del `LICENSE` de Pillow 13.0.0 instalado por el lock.
 
+El artefacto no contiene `_imagingft.pyd` y ninguna de las extensiones PIL
+empaquetadas incorpora Brotli. Por ello FreeType, HarfBuzz, libpng y Brotli
+del aviso consolidado de Pillow no se atribuyen al payload de Pillow. Las
+copias de FreeType, HarfBuzz y libpng que sí están presentes dentro de Qt
+permanecen registradas en la sección Qt anterior.
+
 | Componente incorporado por Pillow | Versión | Licencia declarada en el aviso upstream de Pillow |
 | --- | ---: | --- |
-| Brotli | 1.2.0 | MIT |
-| FreeType | 2.14.3 | FTL OR GPL-2.0-only, con las partes auxiliares indicadas por el mismo aviso |
-| HarfBuzz | 14.5.0 | Old MIT |
 | Little CMS (lcms2) | 2.19.1 | MIT |
 | libavif | 1.4.2 | BSD-2-Clause, más los avisos por archivo de dav1d, IJG, gdk-pixbuf, Apache-2.0 y libyuv incluidos en su sección del `LICENSE` |
 | libjpeg-turbo | 3.2.0 | IJG + BSD-3-Clause + Zlib |
-| libpng | 1.6.58 | PNG Reference Library License 2.0 |
 | libwebp | 1.6.0 | BSD-3-Clause |
 | OpenJPEG | 2.5.4 | BSD-2-Clause |
 | LibTIFF | 4.7.2 | Libtiff License y avisos incorporados indicados por Pillow |
