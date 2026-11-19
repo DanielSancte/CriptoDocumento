@@ -2,6 +2,7 @@
 .superpowers/
 __pycache__/
 .pytest_cache/
+.pytest-*
 .venv/
 .venv-build/
 build/
