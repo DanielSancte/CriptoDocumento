@@ -379,11 +379,23 @@ def test_route_warning_then_overwrite_confirmation_precede_worker_construction(
     assert processor.request.destination == destination
 
 
-def test_worker_request_preserves_literal_password_and_all_permission_choices(
+@pytest.mark.parametrize(
+    ("printing", "copying", "editing"),
+    [
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+    ids=["printing-only", "copying-only", "editing-only"],
+)
+def test_worker_request_preserves_literal_password_and_distinguishes_permission_choices(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
     minimal_pdf_factory,
     tmp_path: Path,
+    printing: bool,
+    copying: bool,
+    editing: bool,
 ) -> None:
     """Catches transforming the password or misrouting any permission choice."""
     source = minimal_pdf_factory("entrada.pdf")
@@ -393,9 +405,9 @@ def test_worker_request_preserves_literal_password_and_all_permission_choices(
     window.add_sources([source])
     window.password_edit.setText(literal_password)
     window.confirmation_edit.setText(literal_password)
-    window.printing_checkbox.setChecked(True)
-    window.copying_checkbox.setChecked(False)
-    window.editing_checkbox.setChecked(True)
+    window.printing_checkbox.setChecked(printing)
+    window.copying_checkbox.setChecked(copying)
+    window.editing_checkbox.setChecked(editing)
     monkeypatch.setattr(window, "_choose_destination", lambda: destination)
     monkeypatch.setattr(main_window, "is_remote_or_synced", lambda _path: False)
     monkeypatch.setattr(window, "_ask_open_folder", lambda _result: False)
@@ -408,9 +420,9 @@ def test_worker_request_preserves_literal_password_and_all_permission_choices(
     assert len(Worker.instances) == 1
     request = Worker.instances[0].request
     assert request.user_password == "  Clave Ñandú 🔐 con espacios  "
-    assert request.permissions.printing is True
-    assert request.permissions.copying is False
-    assert request.permissions.editing is True
+    assert request.permissions.printing is printing
+    assert request.permissions.copying is copying
+    assert request.permissions.editing is editing
 
 
 def test_save_dialog_receives_documentos_protegidos_as_default_name(
