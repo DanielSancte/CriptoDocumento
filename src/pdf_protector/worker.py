@@ -42,7 +42,11 @@ class ProtectionWorker(QObject):
 
     @Slot()
     def cancel(self) -> None:
-        """Request cancellation; ``run`` reports the terminal cancellation signal."""
+        """Request cancellation from any thread.
+
+        Connect a UI cancellation signal with ``Qt.DirectConnection`` so this
+        event setter runs immediately while ``run`` occupies the worker thread.
+        """
         self._cancel_event.set()
 
     @Slot()
@@ -66,31 +70,38 @@ class ProtectionWorker(QObject):
             if self._cancel_event.is_set():
                 self._emit_cancelled()
             else:
-                self.succeeded.emit(result)
-                self._finished = True
+                self._emit_succeeded(result)
         except CancelledError:
             self._emit_cancelled()
         except ProtectionError as error:
             if self._cancel_event.is_set():
                 self._emit_cancelled()
             else:
-                self.failed.emit(self._message_for(error))
-                self._finished = True
+                self._emit_failed(self._message_for(error))
         except Exception:
             if self._cancel_event.is_set():
                 self._emit_cancelled()
             else:
-                self.failed.emit(
+                self._emit_failed(
                     "Ocurrió un problema inesperado al proteger los archivos PDF."
                 )
-                self._finished = True
         finally:
             self._request = None
 
     def _emit_cancelled(self) -> None:
         if not self._finished:
-            self.cancelled.emit()
             self._finished = True
+            self.cancelled.emit()
+
+    def _emit_succeeded(self, result: ProcessingResult) -> None:
+        if not self._finished:
+            self._finished = True
+            self.succeeded.emit(result)
+
+    def _emit_failed(self, message: str) -> None:
+        if not self._finished:
+            self._finished = True
+            self.failed.emit(message)
 
     def _message_for(
         self,

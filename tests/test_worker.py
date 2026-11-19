@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
+import time
 
 import pytest
+from PySide6.QtCore import QObject, QThread, Qt, Signal
 
 from pdf_protector import worker
 from pdf_protector.domain import (
@@ -21,6 +24,10 @@ from pdf_protector.domain import (
 
 
 PASSWORD = "contraseña-que-no-debe-aparecer"
+
+
+class _CancellationController(QObject):
+    requested = Signal()
 
 
 def _request(tmp_path: Path) -> ProtectionRequest:
@@ -184,3 +191,72 @@ def test_worker_cancellation_observed_by_service_emits_only_cancelled(
     assert cancelled == 1
     assert failures == []
     assert successes == []
+
+
+def test_worker_cancelled_from_main_thread_while_running_in_qthread(
+    monkeypatch: pytest.MonkeyPatch, qtbot, tmp_path: Path
+) -> None:
+    """Catches queueing cancellation behind a blocking worker operation."""
+    service_started = threading.Event()
+    terminal_signals: list[str] = []
+    processor = worker.ProtectionWorker(_request(tmp_path))
+    thread = QThread()
+    controller = _CancellationController()
+
+    def wait_for_cancellation(*_args: object, **kwargs: object) -> ProcessingResult:
+        is_cancelled = kwargs["is_cancelled"]
+        assert callable(is_cancelled)
+        service_started.set()
+        while not is_cancelled():
+            time.sleep(0.001)
+        raise CancelledError("never expose this detail")
+
+    monkeypatch.setattr(worker, "protect_to_destination", wait_for_cancellation)
+    processor.moveToThread(thread)
+    thread.started.connect(processor.run)
+    thread.finished.connect(processor.deleteLater)
+    controller.requested.connect(processor.cancel, Qt.ConnectionType.DirectConnection)
+    processor.cancelled.connect(lambda: terminal_signals.append("cancelled"))
+    processor.succeeded.connect(lambda _result: terminal_signals.append("succeeded"))
+    processor.failed.connect(lambda _message: terminal_signals.append("failed"))
+    processor.cancelled.connect(thread.quit)
+
+    with qtbot.waitSignal(thread.finished, timeout=1_000):
+        thread.start()
+        qtbot.waitUntil(service_started.is_set, timeout=1_000)
+        controller.requested.emit()
+
+    assert not thread.isRunning()
+    assert terminal_signals == ["cancelled"]
+
+
+def test_worker_marks_success_finished_before_signal_allows_reentrant_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Catches a reentrant terminal-signal handler starting the request twice."""
+    request = _request(tmp_path)
+    result = ProcessingResult(destination=request.destination, pages=1)
+    calls = 0
+    reentered = False
+    results: list[ProcessingResult] = []
+    processor = worker.ProtectionWorker(request)
+
+    def complete(*_args: object, **_kwargs: object) -> ProcessingResult:
+        nonlocal calls
+        calls += 1
+        return result
+
+    def run_once_more() -> None:
+        nonlocal reentered
+        if not reentered:
+            reentered = True
+            processor.run()
+
+    monkeypatch.setattr(worker, "protect_to_destination", complete)
+    processor.succeeded.connect(run_once_more)
+    processor.succeeded.connect(results.append)
+
+    processor.run()
+
+    assert calls == 1
+    assert results == [result]
