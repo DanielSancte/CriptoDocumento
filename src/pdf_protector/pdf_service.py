@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from decimal import Decimal
 from pathlib import Path
 from typing import BinaryIO
 
@@ -239,6 +240,28 @@ def _normal_appearance(annotation: object, path: Path) -> object | None:
     return appearances.get("/N")
 
 
+def _is_borderless_link(annotation: pikepdf.Dictionary) -> bool:
+    """Identify links with no appearance and an explicitly zero-width border."""
+    if annotation.get("/Subtype") != pikepdf.Name.Link or "/AP" in annotation:
+        return False
+
+    widths = []
+    if "/Border" in annotation:
+        border = annotation["/Border"]
+        if not isinstance(border, pikepdf.Array) or len(border) not in (3, 4):
+            return False
+        widths.append(border[2])
+    if "/BS" in annotation:
+        style = annotation["/BS"]
+        if not isinstance(style, pikepdf.Dictionary):
+            return False
+        widths.append(style.get("/W"))
+
+    return bool(widths) and all(
+        type(width) in (int, Decimal) and width == 0 for width in widths
+    )
+
+
 def _flatten_visible_annotations(
     document: pikepdf.Pdf,
     path: Path,
@@ -254,14 +277,20 @@ def _flatten_visible_annotations(
                 f"La estructura de anotaciones de '{path.name}' no es válida.",
                 path=path,
             )
+        visible_annotations = []
         for annotation in annotations:
             _raise_if_cancelled(is_cancelled)
             if _normal_appearance(annotation, path) is None:
+                if _is_borderless_link(annotation):
+                    continue
                 raise SourcePdfError(
                     "No se puede aplanar de forma segura la apariencia de "
                     f"'{path.name}'.",
                     path=path,
                 )
+            visible_annotations.append(annotation)
+        if len(visible_annotations) != len(annotations):
+            page.obj["/Annots"] = pikepdf.Array(visible_annotations)
 
     _raise_if_cancelled(is_cancelled)
     document.flatten_annotations(mode="all")

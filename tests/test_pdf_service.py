@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from io import BytesIO
 import hashlib
 import itertools
@@ -295,6 +296,56 @@ def test_sanitize_removes_payloads_from_nested_form_xobject_graph(
         assert not any(b"NESTED-XOBJECT-METADATA" in data for data in reachable_streams)
         assert any(b"NESTED-VISIBLE-XOBJECT" in data for data in reachable_streams)
         assert b"/Outer Do" in _page_content(sanitized.pages[0])
+
+
+@pytest.mark.parametrize(
+    ("border", "style_width", "can_remove"),
+    [
+        pytest.param([0, 0, 0], None, True, id="zero-width-border"),
+        pytest.param(None, Decimal("0.0"), True, id="zero-width-style"),
+        pytest.param(None, None, False, id="default-visible-border"),
+        pytest.param([0, 0, 1], None, False, id="visible-border"),
+        pytest.param([0, 0, 0], 1, False, id="conflicting-border-style"),
+    ],
+)
+def test_sanitize_handles_links_without_appearance_streams(
+    tmp_path: Path,
+    border: list[int] | None,
+    style_width: int | Decimal | None,
+    can_remove: bool,
+) -> None:
+    """Catches borderless links blocking protection or visible borders being lost."""
+    source = tmp_path / "link.pdf"
+    content = b"q 1 0 0 rg 0 0 20 20 re f Q\n"
+    with pikepdf.Pdf.new() as document:
+        page = document.add_blank_page()
+        page.Contents = document.make_stream(content)
+        link = pikepdf.Dictionary(
+            Type=pikepdf.Name.Annot,
+            Subtype=pikepdf.Name.Link,
+            Rect=pikepdf.Array([0, 0, 20, 20]),
+            A=pikepdf.Dictionary(S=pikepdf.Name.URI, URI="https://example.invalid"),
+        )
+        if border is not None:
+            link.Border = pikepdf.Array(border)
+        if style_width is not None:
+            link.BS = pikepdf.Dictionary(W=style_width)
+        page.Annots = pikepdf.Array([document.make_indirect(link)])
+        document.save(source)
+
+    request = _request((source,), tmp_path / "unused.pdf")
+    with BytesIO() as sink:
+        if not can_remove:
+            with pytest.raises(SourcePdfError, match="aplanar de forma segura"):
+                build_encrypted_pdf(request, sink)
+            assert sink.getvalue() == b""
+            return
+
+        assert build_encrypted_pdf(request, sink) == 1
+        sink.seek(0)
+        with pikepdf.open(sink, password=USER_PASSWORD) as sanitized:
+            assert "/Annots" not in sanitized.pages[0].obj
+            assert _page_content(sanitized.pages[0]) == content
 
 
 def test_sanitize_reports_a_technical_limitation_instead_of_dropping_appearance(
